@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 import torch.nn.functional as F
-from .backbone import build_backbone
+from .backbone import build_backbone, build_mask_backbone
 from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
 
 import numpy as np
@@ -295,6 +295,12 @@ def build(args):
         for _ in args.camera_names:
             backbone = build_backbone(args)
             backbones.append(backbone)
+
+    if args.use_masks:
+        for name in args.camera_names:
+            if name == "head_camera":
+                backbone = build_mask_backbone(args)
+                backbones.append(backbone)
 
     transformer = build_transformer(args)
 

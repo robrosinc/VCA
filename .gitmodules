@@ -1,0 +1,3 @@
+[submodule "external/tamapp"]
+	path = external/tamapp
+	url = https://github.com/robrosinc/REALTIME_SAM2.git

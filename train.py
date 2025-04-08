@@ -6,6 +6,7 @@ import argparse
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from itertools import repeat
+import logging
 from tqdm import tqdm
 from einops import rearrange
 import wandb
@@ -41,6 +42,7 @@ def main(args):
     # command line parameters
     is_wandb = args["wandb"]
     use_depth = args["use_depth"]
+    use_masks = args["use_masks"]
     ckpt_dir = args["ckpt_dir"]
     policy_class = args["policy_class"]
     onscreen_render = args["onscreen_render"]
@@ -161,6 +163,7 @@ def main(args):
         "load_pretrain": args["load_pretrain"],
         "actuator_config": actuator_config,
         "wandb": is_wandb,
+        "use_masks": use_masks
     }
 
     if not os.path.isdir(ckpt_dir):
@@ -170,9 +173,9 @@ def main(args):
 
     if is_wandb:
         wandb.init(
-            project=task_name,
+            project="SAMIL",
             reinit=True,
-            entity="daegyulim",
+            entity="donggunkim-kyung-hee-university",
             name=expr_name,
         )
         wandb.config.update(config)
@@ -282,6 +285,22 @@ def forward_pass(data, policy):
         robot_proprio_data, image_data, action_data, is_pad
     )  # TODO remove None
 
+def forward_pass_with_masks(data, policy):
+    image_data, robot_proprio_data, action_data, is_pad, mask_data = data
+    image_data, robot_proprio_data, action_data, is_pad, mask_data = (
+        image_data.cuda(),
+        robot_proprio_data.cuda(),
+        action_data.cuda(),
+        is_pad.cuda(),
+        mask_data.cuda(),
+    )
+
+    mask_data_expanded = mask_data.expand(-1, 3, -1, 3, -1, -1)
+    image_data = torch.cat((image_data, mask_data_expanded), dim=1)
+    return policy(
+        robot_proprio_data, image_data, action_data, is_pad
+    )  # TODO remove None
+
 
 def train_bc(train_dataloader, val_dataloader, config):
     num_steps = config["num_steps"]
@@ -293,6 +312,7 @@ def train_bc(train_dataloader, val_dataloader, config):
     validate_every = config["validate_every"]
     save_every = config["save_every"]
     is_wandb = config["wandb"]
+    use_masks = config["use_masks"]
 
     set_seed(seed)
     validation_iteration = 50
@@ -304,7 +324,8 @@ def train_bc(train_dataloader, val_dataloader, config):
         print(f"loaded! {loading_status}")
 
     if config["resume_ckpt_path"] is not None:
-        loading_status = policy.deserialize(torch.load(config["resume_ckpt_path"]))
+        checkpoint = torch.load(config["resume_ckpt_path"], map_location= lambda storage, loc : storage.cuda(0))
+        loading_status = policy.deserialize(checkpoint)
         print(
             f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}'
         )
@@ -315,9 +336,9 @@ def train_bc(train_dataloader, val_dataloader, config):
     best_ckpt_info = None
 
     train_dataloader = repeater(train_dataloader)
-    for step in tqdm(range(num_steps + 1), dynamic_ncols=True):
+    for step in tqdm(range(num_steps), dynamic_ncols=True):
         # validation
-        if step % validate_every == 0:
+        if False and step % validate_every == 0:
             print("validating")
 
             with torch.inference_mode():
@@ -329,11 +350,14 @@ def train_bc(train_dataloader, val_dataloader, config):
                     dynamic_ncols=True,
                 ):
                     # t0 = time.time()
-                    forward_dict = forward_pass(data, policy)
+                    if use_masks:
+                        forward_dict = forward_pass_with_masks(data, policy)
+                    else:
+                        forward_dict = forward_pass(data, policy)
                     validation_dicts.append(forward_dict)
                     # t1 = time.time()
                     # print(t1-t0)
-                    if batch_idx > validation_iteration:
+                    if batch_idx >= validation_iteration:
                         break
 
                 validation_summary = compute_dict_mean(validation_dicts)
@@ -366,7 +390,10 @@ def train_bc(train_dataloader, val_dataloader, config):
         policy.train()
 
         data = next(train_dataloader)
-        forward_dict = forward_pass(data, policy)
+        if use_masks:
+            forward_dict = forward_pass_with_masks(data, policy)
+        else:
+            forward_dict = forward_pass(data, policy)
 
         # backward
         loss = forward_dict["loss"]
@@ -540,7 +567,7 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument("--use_depth", action="store_true", default=False)
-
+    parser.add_argument("--use_masks", action="store_true", default=False)
     parser.add_argument(
         "--hidden_dim",
         action="store",

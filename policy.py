@@ -292,7 +292,7 @@ class ACTPolicy(nn.Module):
 
     def deserialize(self, model_dict):
         # print("model_dict: ", model_dict)
-        return self.load_state_dict(model_dict)
+        return self.load_state_dict(model_dict, strict=False)
 
 
 class CNNMLPPolicy(nn.Module):

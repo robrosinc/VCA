@@ -41,6 +41,14 @@ TASK_CONFIGS = {
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],
         'robot_id_list': ['dsr_l', 'dsr_r'],
         # 'sample_weights': [3,1],
+    },
+    'mask_demo':{
+        'dataset_dir': ['/mnt/ddrive/Downloads'],
+        'episode_len': 3600,
+        'train_ratio': 0.99,
+        'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],
+        'robot_id_list': ['dsr_l', 'dsr_r'],
+        # 'sample_weights': [3,1],
     }
 }
 
