@@ -40,9 +40,9 @@ ROBOT_MODEL = "a0509"
 
 app = Flask(__name__)
 
-tam_checkpoint = "../checkpoints/efficienttam_ti_512x512.pt"
-model_cfg = "../efficient_track_anything/configs/efficienttam/efficienttam_ti_512x512.yaml"
-predictor = build_efficienttam_camera_predictor(model_cfg, tam_checkpoint)
+tam_checkpoint = "external/tamapp/checkpoints/efficienttam_ti_512x512.pt"
+model_cfg = "efficient_track_anything/configs/efficienttam/efficienttam_ti_512x512.yaml"
+
 classes = [0, 1, 2, 3]  # Adjust number of classes
 
 click_points = {cls: [] for cls in classes}  # Store clicked points for all classes
@@ -51,11 +51,102 @@ reset = False
 reset_class = 0
 current_frame_idx = 0
 
-no_obj_points = np.array([[0,0]], dtype=np.float32)
-no_obj_labels = np.array([-1], dtype=np.int32)
+# Shared global used by Flask to stream
+latest_mask_bytes = None
+
+def process_mask_frame(frame, predictor, click_points, classes, current_class, reset_flags):
+    """
+    Process a frame from the head_camera with the mask predictor.
+
+    Args:
+        frame: Raw RGB frame from image_recorder.get_images()["head_camera"]
+        predictor: Initialized TAM predictor
+        click_points: Global click dictionary {class: [[x, y], ...]}
+        classes: List of object class indices
+        current_class: Currently selected class
+        reset_flags: Dict with keys 'reset' and 'reset_class'
+
+    Updates:
+        - latest_mask_bytes: Encoded JPEG bytes for Flask
+        - Returns: binary_mask (for inference), frame_with_mask (for optional display)
+    """
+    global latest_mask_bytes
+    no_obj_points = np.array([[0, 0]], dtype=np.float32)
+    no_obj_labels = np.array([-1], dtype=np.int32)
+
+    # Run tracker
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        _, out_mask_logits = predictor.track(frame)
+
+    # Collect prompts
+    new_input = False
+    first_hit = True
+    Gathered_matrix = {cls: {'points': [], 'labels': [], 'first_hit': []} for cls in classes}
+    for cls in classes:
+        if click_points[cls]:
+            new_input = True
+            for point in click_points[cls]:
+                Gathered_matrix[cls]['points'].append(point)
+                Gathered_matrix[cls]['labels'].append(1)
+                Gathered_matrix[cls]['first_hit'].append(first_hit)
+                first_hit = False
+            click_points[cls] = []
+
+    if new_input or reset_flags["reset"]:
+        for cls in classes:
+            if Gathered_matrix[cls]['points']:
+                points = np.array(Gathered_matrix[cls]['points'], dtype=np.float32)
+                labels = np.array(Gathered_matrix[cls]['labels'], dtype=np.int32)
+                first_hit = np.array(Gathered_matrix[cls]['first_hit'], dtype=np.bool_)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    predictor.add_new_points_during_track(cls, points, labels, first_hit=first_hit[0], frame=frame)
+        if reset_flags["reset"]:
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                predictor.add_new_points(
+                    frame_idx=reset_flags["current_frame_idx"],
+                    obj_id=reset_flags["reset_class"],
+                    points=no_obj_points,
+                    labels=no_obj_labels,
+                    new_input=True
+                )
+            reset_flags["reset"] = False
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _, _, out_mask_logits = predictor.finalize_new_input()
+
+    # Convert and visualize
+    mask_logits = out_mask_logits.cpu().numpy()
+    frame_with_mask = apply_mask_to_frame(frame, mask_logits[0:4])
+
+    # Show UI elements
+    cv2.putText(frame_with_mask, f"Selected Class: {current_class}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    for i, cls in enumerate(classes):
+        color = (0, 255, 0) if cls == current_class else (200, 200, 200)
+        cv2.putText(frame_with_mask, f"Class {cls}", (10, 60 + i * 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    # Update latest_mask_bytes for Flask streaming
+    ret, buffer = cv2.imencode('.jpg', frame_with_mask)
+    if ret:
+        latest_mask_bytes = buffer.tobytes()
+
+    # Generate binary mask if needed for inference
+    binary_mask = (mask_logits[0] > 0).astype(np.uint8) * 255
+    for i in range(1, len(classes)):
+        binary_mask = cv2.bitwise_or(binary_mask, (mask_logits[i] > 0).astype(np.uint8) * 255)
+
+    return binary_mask, frame_with_mask
+
 
 def main(args):
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    print("inside main")
+    predictor = build_efficienttam_camera_predictor(model_cfg, tam_checkpoint)
+    rospy.init_node("tam_policy_node", anonymous=True)
+    # Start Flask in a separate thread so main() can continue
+    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False))
+    flask_thread.daemon = True  # ensures it exits when main thread exits
+    flask_thread.start()
 
     task_config = TASK_CONFIGS[args['task_name']]
     dataset_dir = task_config['dataset_dir']
@@ -71,13 +162,11 @@ def main(args):
     temporal_ensemble = True
     esb_k = 0.05
     policy_update_period = 10 # tick, work without temporal ensemble
-    record_data = False
-    ROS_publish_data = False
     use_depth = False
     use_masks = True
     overwrite = False
-    reletive_obs_mode = False
-    reletive_action_mode = False
+    relative_obs_mode = False
+    relative_action_mode = False
     trained_on_gpu_server = False # True if use ckpt in gpu_server folder
     use_rotm6d = True
     img_downsampling = True
@@ -116,8 +205,8 @@ def main(args):
     # load model parameters
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    # ckpt_path = os.path.join(ckpt_dir, 'policy_step_62_seed_0.ckpt')
+    # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_17600_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -150,7 +239,7 @@ def main(args):
 
     image_obs_history = dict()
     depth_obs_history = dict()
-    if reletive_obs_mode:
+    if relative_obs_mode:
         robot_obs_history = np.zeros((num_robot_obs+1, state_dim), dtype=np.float32)
         relative_robot_obs_history = np.zeros((num_robot_obs, state_dim), dtype=np.float32)
     else:
@@ -200,7 +289,7 @@ def main(args):
     actual_dt_history = []
 
     images_size = dict()
-    # check cameara streaming
+    # check camera streaming
     for cam_name in camera_names:
         images = image_recorder.get_images()
         while images[cam_name] is None:
@@ -386,7 +475,7 @@ def main(args):
                 robot_obs_history[0] = robot_state[:]
 
                 # print('robot_obs_history: \n', robot_obs_history)
-                if reletive_obs_mode:
+                if relative_obs_mode:
                     for r in range(num_robots):
                         reference_state_pos = robot_obs_history[0, 3*r:3*(r+1)]
                         reference_state_euler = robot_obs_history[0, 3*num_robots+3*r:3*num_robots+3*(r+1)]
@@ -415,64 +504,11 @@ def main(args):
                     current_image = image_recorder.get_images()[cam_name]
 
                     if cam_name == 'head_camera':
-                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                            _, out_mask_logits = predictor.track(current_image)
-                        Gathered_matrix = {cls: {'points': [], 'labels': [], 'first_hit': []} for cls in classes}
-
-                        for cls in classes:
-                            if click_points[cls]:
-                                new_input = True
-                                for point in click_points[cls]:
-                                    Gathered_matrix[cls]['points'].append(point)
-                                    Gathered_matrix[cls]['labels'].append(1)
-                                    Gathered_matrix[cls]['first_hit'].append(first_hit)
-                                    first_hit = False
-                                click_points[cls] = []
+                        binary_mask, frame_with_mask = process_mask_frame(
+                            frame, predictor, click_points, classes, current_class,
+                            reset_flags={"reset": reset, "reset_class": reset_class, "current_frame_idx": current_frame_idx}
+                        )
                         
-                        if new_input or reset:
-                            for cls in classes:
-                                if Gathered_matrix[cls]['points']:
-                                    points = np.array(Gathered_matrix[cls]['points'], dtype=np.float32)
-                                    labels = np.array(Gathered_matrix[cls]['labels'], dtype=np.int32)
-                                    first_hit = np.array(Gathered_matrix[cls]['first_hit'], dtype=np.bool_)
-
-                                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                                        predictor.add_new_points_during_track(cls, points, labels, first_hit=first_hit[0], frame=frame)
-                            
-                            if reset:
-                                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                                    predictor.add_new_points(
-                                        frame_idx=current_frame_idx,
-                                        obj_id=reset_class,
-                                        points=no_obj_points,
-                                        labels=no_obj_labels,
-                                        new_input=True
-                                    )
-                                reset = False
-
-                            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                                _, _, out_mask_logits = predictor.finalize_new_input()
-
-                        mask_logits = out_mask_logits.cpu().numpy()
-
-                        frame_with_mask = apply_mask_to_frame(current_image, mask_logits[0:4])
-
-                        binary_mask = (mask_logits[0]>0).astype(np.uint8)*255
-                        for i in range(1,4):
-                            binary_mask = cv2.bitwise_or((mask_logits[i]>0).astype(np.uint8)*255, binary_mask) # h, w
-                        
-                        cv2.putText(frame_with_mask, f"Selected Class: {current_class}", (10, 30), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                        
-                        # 각 클래스 표시
-                        for i, cls in enumerate(classes):
-                            color = (0, 255, 0) if cls == current_class else (200, 200, 200)
-                            cv2.putText(frame_with_mask, f"Class {cls}", (10, 60 + i*30), 
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-                        _, buffer = cv2.imencode('.jpg', frame_with_mask)
-                        frame = buffer.tobytes()
-
                         current_image = current_image[140:-100, :].copy() # crop height
                         current_mask = binary_mask[140:-100].copy()
                         resized_mask = cv2.resize(current_mask, dsize=(1280, 480), interpolation=cv2.INTER_NEAREST)
@@ -495,23 +531,9 @@ def main(args):
                         image_obs_history[cam_name][0] = current_image
                     
 
-                if use_depth:
-                    current_depth = np.array([image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name]])
-                    
-                    if num_image_obs >1:
-                        depth_obs_history[cam_name][1:] =  depth_obs_history[cam_name][:-1]
-                        depth_obs_history[cam_name][0] = current_depth
-                    else:
-                        depth_obs_history[cam_name][0] = current_depth
-                    
-
                 all_cam_images = []
                 for cam_name in camera_names:
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
-
-                if use_depth:
-                    for cam_name in camera_names:
-                        all_cam_images.append(np.array(depth_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
 
@@ -541,7 +563,7 @@ def main(args):
 
                 
                 # print('all_actions: \n', all_actions[:30])
-                if reletive_action_mode:
+                if relative_action_mode:
                     dsr_rotation = Rotation.from_euler("ZYZ", dsr_state_euler, degrees=True)
                     dsr_state_rotm = dsr_rotation.as_matrix()
                     rel_all_actions = all_actions
@@ -654,101 +676,13 @@ def main(args):
         # print('dsr_state_euler: ', dsr_state_euler)
         
         ###### COMMAND ROBOT (IMPORTANT) ######
-        dsr.set_action(dsr_desired_pose)
-        gripper.set_action(desired_gripper_pose)
+        # dsr.set_action(dsr_desired_pose)
+        # gripper.set_action(desired_gripper_pose)
         #########################################
         
         # dsr.step() # for ROS topic publish
-
-        if record_data:
-            # dsr_action = dsr.get_action()
-            # gripper_action = gripper.get_action()
-            # print('dsr_action: ', dsr_action)
-            # print('gripper_action: ', gripper_action)
-
-            data_dict['/observations/xpos'].append(dsr_state_xpos)
-            data_dict['/observations/euler'].append(dsr_state_euler)
-            data_dict['/observations/gripper_pos'].append(gripper_state)
-            data_dict['/actions/pose'].append(dsr_desired_pose)
-            data_dict['/actions/gripper_pos'].append(desired_gripper_pose)
-            
-            data_dict['/all_actions/left_pos_traj'].append(all_actions[:, 0:3])
-            data_dict['/all_actions/right_pos_traj'].append(all_actions[:, 3:6])
-            data_dict['/all_actions/left_quat_traj'].append(rot6d2quat(all_actions[:, 6:12]))
-            data_dict['/all_actions/right_quat_traj'].append(rot6d2quat(all_actions[:, 12:18]))
-            data_dict['/all_actions/left_gripper_pos_traj'].append(all_actions[:, -2])
-            data_dict['/all_actions/right_gripper_pos_traj'].append(all_actions[:, -1])
-            
-            for cam_name in camera_names:
-                data_dict[f'/observations/images/{cam_name}'].append((image_recorder.get_images())[cam_name])
-                if use_depth:
-                    data_dict[f'/observations/depth_images/{cam_name}'].append((image_recorder.get_depth_images())[cam_name])
         
-        # t2 = time.time() #
-        # actual_dt_history.append([t0, t1, t2])
 
-        # print("tdsr - t0: ", tdsr-t0)
-        # print("t1 - tdsr: ", t1-tdsr)
-        # print("t2 - t1: ", t2-t1)
-        
-        if ROS_publish_data:
-            
-            
-            left_action_traj_msg = PoseArray()
-            right_action_traj_msg = PoseArray()
-            
-            for i in range(num_queries):
-                left_action_traj_msg.header.stamp = rospy.Time.now()
-                right_action_traj_msg.header.stamp = rospy.Time.now()
-                left_action_traj_msg.header.frame_id = "world"
-                right_action_traj_msg.header.frame_id = "world"
-                
-                left_pose = Pose()
-                right_pose = Pose()
-                
-                left_pose.position.x = all_actions[i, 0]*0.001 - 0.3
-                left_pose.position.y = all_actions[i, 1]*0.001
-                left_pose.position.z = all_actions[i, 2]*0.001
-                
-                right_pose.position.x = all_actions[i, 3]*0.001 + 0.3
-                right_pose.position.y = all_actions[i, 4]*0.001
-                right_pose.position.z = all_actions[i, 5]*0.001
-                
-                left_quat = rot6d2quat(all_actions[i, 6:12])
-                right_quat = rot6d2quat(all_actions[i, 12:18])
-                
-                left_pose.orientation.x = left_quat[0]
-                left_pose.orientation.y = left_quat[1]
-                left_pose.orientation.z = left_quat[2]
-                left_pose.orientation.w = left_quat[3]
-                
-                right_pose.orientation.x = right_quat[0]
-                right_pose.orientation.y = right_quat[1]
-                right_pose.orientation.z = right_quat[2]
-                right_pose.orientation.w = right_quat[3]
-                
-                left_action_traj_msg.poses.append(left_pose)
-                right_action_traj_msg.poses.append(right_pose)
-
-            left_gripper_traj_msg.data = all_actions[:, -2]
-            right_gripper_traj_msg.data = all_actions[:, -1]
-            
-            left_action_pose_publisher.publish(left_action_traj_msg)
-            right_action_pose_publisher.publish(right_action_traj_msg)
-            
-            left_action_gripper_publisher.publish(left_gripper_traj_msg)
-            right_action_gripper_publisher.publish(right_gripper_traj_msg)
-            
-        t_end = time.time() #
-
-        # 
-
-        # print("t1 - t0: ", t1-t0)
-        # print("t2 - t1: ", t2-t1)
-        # print("t4 - t3: ", t4-t3)
-        
-        # print("t3 - t2 (inference): ", t3-t2)
-        # print("t_end - t0 (total): ", t_end-t0)
         if t_end-t0>0.05:
             print("t3 - t2 (inference): ", t3-t2)
             print("t_end - t0 (total): ", t_end-t0)
@@ -769,138 +703,6 @@ def main(args):
     print(f'Avg Control Frequency [Hz]: {dsr.dsr_list[0].tick / (time.time() - time0)}')
     
     
-    if record_data:
-        COMPRESS = True
-
-        if COMPRESS:
-            # JPEG compression
-            t0 = time.time()
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50] # tried as low as 20, seems fine
-            compressed_image_len = []
-            # compressed_depth_len = []
-            for cam_name in camera_names:
-                image_list = data_dict[f'/observations/images/{cam_name}']
-                # depth_list = data_dict[f'/observations/depth_images/{cam_name}']
-                compressed_list = []
-                # compressed_depth_list = []
-                compressed_image_len.append([])
-                # compressed_depth_len.append([])
-                
-                for image in image_list:
-                    result, encoded_image = cv2.imencode('.jpg', image, encode_param) # 0.02 sec # cv2.imdecode(encoded_image, 1)
-                    compressed_list.append(encoded_image)
-                    compressed_image_len[-1].append(len(encoded_image))
-                    if result == False:
-                        print('Error during image compression')
-                data_dict[f'/observations/images/{cam_name}'] = compressed_list
-                
-                # if use_depth:
-                #     for depth in depth_list:
-                #         result, encoded_depth = cv2.imencode('.jpg', depth, encode_param) # 0.02 sec # cv2.imdecode(encoded_image, 1)
-                #         compressed_depth_list.append(encoded_depth)
-                #         compressed_depth_len[-1].append(len(encoded_depth))
-                #         if result == False:
-                #             print('Error during depth image compression')
-                    
-                #     data_dict[f'/observations/depth_images/{cam_name}'] = compressed_depth_list
-                
-                
-            print(f'compression: {time.time() - t0:.2f}s')
-
-            # pad so it has same length
-            t0 = time.time()
-            compressed_image_len = np.array(compressed_image_len)
-            
-
-            padded_size = compressed_image_len.max()
-            for cam_name in camera_names:
-                compressed_image_list = data_dict[f'/observations/images/{cam_name}']
-                padded_compressed_image_list = []
-                for compressed_image in compressed_image_list:
-                    padded_compressed_image = np.zeros(padded_size, dtype='uint8')
-                    image_len = len(compressed_image)
-                    padded_compressed_image[:image_len] = compressed_image
-                    padded_compressed_image_list.append(padded_compressed_image)
-                data_dict[f'/observations/images/{cam_name}'] = padded_compressed_image_list
-
-            if use_depth:
-                compressed_depth_len = np.array(compressed_depth_len)
-                padded_size2 = compressed_depth_len.max()
-                for cam_name in camera_names:
-                    compressed_depth_list = data_dict[f'/observations/depth_images/{cam_name}']
-                    padded_compressed_depth_list = []
-                    for compressed_depth in compressed_depth_list:
-                        padded_compressed_depth = np.zeros(padded_size2, dtype='uint8')
-                        depth_len = len(compressed_depth)
-                        padded_compressed_depth[:depth_len] = compressed_depth
-                        padded_compressed_depth_list.append(padded_compressed_depth)
-                    data_dict[f'/observations/depth_images/{cam_name}'] = padded_compressed_depth_list
-            print(f'padding: {time.time() - t0:.2f}s')
-
-        # HDF5
-        t0 = time.time()
-        with h5py.File(dataset_path + '.hdf5', 'w', rdcc_nbytes=1024**2*2) as root:
-            # root.attrs['sim'] = False
-            root.attrs['compress'] = COMPRESS
-            obs = root.create_group('observations')
-            actions = root.create_group('actions')
-            image = obs.create_group('images')
-            
-            all_actions = root.create_group('all_actions')
-            _ = all_actions.create_dataset('left_pos_traj', (max_timesteps, num_queries, 3))
-            _ = all_actions.create_dataset('right_pos_traj', (max_timesteps, num_queries, 3))
-            _ = all_actions.create_dataset('left_quat_traj', (max_timesteps, num_queries, 4))
-            _ = all_actions.create_dataset('right_quat_traj', (max_timesteps, num_queries, 4))
-            _ = all_actions.create_dataset('left_gripper_pos_traj', (max_timesteps, num_queries))
-            _ = all_actions.create_dataset('right_gripper_pos_traj', (max_timesteps, num_queries))
-            
-            # depth = obs.create_group('depth_images')
-            
-            for cam_name in camera_names:
-                if COMPRESS:
-                    _ = image.create_dataset(cam_name, (max_timesteps, padded_size), dtype='uint8',
-                                            chunks=(1, padded_size), )
-                    # if use_depth:
-                    #     _ = depth.create_dataset(cam_name, (max_timesteps, padded_size2), dtype='uint8',
-                    #                             chunks=(1, padded_size2), )
-                else:
-                    _ = image.create_dataset(cam_name, (max_timesteps, images_size[cam_name][0], images_size[cam_name][1], images_size[cam_name][2]), dtype='uint8',
-                                            chunks=(1, images_size[cam_name][0], images_size[cam_name][1], images_size[cam_name][2]), )
-                    # if use_depth:
-                    #     _ = depth.create_dataset(cam_name, (max_timesteps, 480, 640), dtype='uint8',
-                    #                             chunks=(1, 480, 640, 1), )
-            _ = obs.create_dataset('xpos', (max_timesteps, 6))
-            _ = obs.create_dataset('euler', (max_timesteps, 6))
-            _ = obs.create_dataset('gripper_pos', (max_timesteps, 2))
-            _ = actions.create_dataset('pose', (max_timesteps, 12))
-            _ = actions.create_dataset('gripper_pos', (max_timesteps, 2))
-
-            for name, array in data_dict.items():
-                print(f'name: {name}')
-                root[name][...] = array
-
-            if COMPRESS:
-                _ = root.create_dataset('compressed_image_len', (len(camera_names), max_timesteps))
-                root['/compressed_image_len'][...] = compressed_image_len
-                # if use_depth:
-                #     _ = root.create_dataset('compressed_depth_len', (len(camera_names), max_timesteps))
-                #     root['/compressed_depth_len'][...] = compressed_depth_len
-
-        # save all actions data
-        with open(os.path.join(dataset_dir, 'left_gripper_pos_traj') + '.txt', 'w') as f:
-            # Write each numpy array to the file
-            # for array in [array1, array2, array3]:
-            # Write array as a space-separated string
-            np.savetxt(f, data_dict['/all_actions/left_gripper_pos_traj'], fmt='%f')  # %d is for integer format, change to %f for floating-point
-            # f.write('\n')  # Add a newline between arrays
-        with open(os.path.join(dataset_dir, 'right_gripper_pos_traj') + '.txt', 'w') as f:
-            # Write each numpy array to the file
-            # for array in [array1, array2, array3]:
-            # Write array as a space-separated string
-            np.savetxt(f, data_dict['/all_actions/right_gripper_pos_traj'], fmt='%f')  # %d is for integer format, change to %f for floating-point
-            # f.write('\n')  # Add a newline between arrays
-
-        print(f'Saving: {time.time() - t0:.1f} secs')
 
 def get_auto_index(dataset_dir, dataset_name_prefix = '', data_suffix = 'hdf5'):
     max_idx = 1000
@@ -995,7 +797,13 @@ def index():
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(EDIT_HERE, mimetype='multipart/x-mixed-replace; boundary=frame')
+    def stream():
+        while True:
+            if latest_mask_bytes:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + latest_mask_bytes + b'\r\n')
+            time.sleep(0.033)  # ~30 FPS
+    return Response(stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/click', methods=['POST'])
 def handle_click():
