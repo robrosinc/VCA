@@ -41,7 +41,7 @@ ROBOT_MODEL = "a0509"
 app = Flask(__name__)
 
 tam_checkpoint = "external/tamapp/checkpoints/efficienttam_ti_512x512.pt"
-model_cfg = "efficient_track_anything/configs/efficienttam/efficienttam_ti_512x512.yaml"
+model_cfg = "configs/efficienttam/efficienttam_ti_512x512.yaml"
 
 classes = [0, 1, 2, 3]  # Adjust number of classes
 
@@ -51,28 +51,17 @@ reset = False
 reset_class = 0
 current_frame_idx = 0
 
+predictor_ready= False
+init_masks=[]
+
+no_obj_points = np.array([[0, 0]], dtype=np.float32)
+no_obj_labels = np.array([-1], dtype=np.int32)
+
 # Shared global used by Flask to stream
 latest_mask_bytes = None
 
 def process_mask_frame(frame, predictor, click_points, classes, current_class, reset_flags):
-    """
-    Process a frame from the head_camera with the mask predictor.
-
-    Args:
-        frame: Raw RGB frame from image_recorder.get_images()["head_camera"]
-        predictor: Initialized TAM predictor
-        click_points: Global click dictionary {class: [[x, y], ...]}
-        classes: List of object class indices
-        current_class: Currently selected class
-        reset_flags: Dict with keys 'reset' and 'reset_class'
-
-    Updates:
-        - latest_mask_bytes: Encoded JPEG bytes for Flask
-        - Returns: binary_mask (for inference), frame_with_mask (for optional display)
-    """
     global latest_mask_bytes
-    no_obj_points = np.array([[0, 0]], dtype=np.float32)
-    no_obj_labels = np.array([-1], dtype=np.int32)
 
     # Run tracker
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -140,10 +129,11 @@ def process_mask_frame(frame, predictor, click_points, classes, current_class, r
 
 
 def main(args):
+    global init_masks, predictor_ready
     print("inside main")
     predictor = build_efficienttam_camera_predictor(model_cfg, tam_checkpoint)
-    rospy.init_node("tam_policy_node", anonymous=True)
     # Start Flask in a separate thread so main() can continue
+    
     flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False))
     flask_thread.daemon = True  # ensures it exits when main thread exits
     flask_thread.start()
@@ -257,9 +247,9 @@ def main(args):
     post_process = lambda a: a * stats['action_std'] + stats['action_mean']
 
     # saving dataset
-    if not os.path.isdir(dataset_dir):
-        os.makedirs(dataset_dir)
-    dataset_path = os.path.join(dataset_dir, dataset_name)
+    if not os.path.isdir(dataset_dir[0]):
+        os.makedirs(dataset_dir[0])
+    dataset_path = os.path.join(dataset_dir[0], dataset_name)
     if os.path.isfile(dataset_path) and not overwrite:
         print(f'Dataset already exist at \n{dataset_path}\nHint: set overwrite to True.')
         exit()
@@ -300,17 +290,6 @@ def main(args):
             images = image_recorder.get_images()
 
         images_size[cam_name] = images[cam_name].shape # h w c
-
-        if use_depth:
-            depth_images = image_recorder.get_depth_images()
-            while depth_images[cam_name] is None:
-                print('waiting '+cam_name+' depth image streaming...')
-                if rospy.is_shutdown():
-                    break
-                time.sleep(1.0)
-                images = image_recorder.get_images()
-
-    
 
     print('Are you ready?')
     for cnt in range(3):
@@ -373,7 +352,6 @@ def main(args):
 
     # robot_state = pre_process(robot_state)
     robot_obs_history[:] = robot_state
-
     image_sampling = range(0, (num_image_obs-1)*image_obs_every+1, image_obs_every)
     for cam_name in camera_names:
         first_image = image_recorder.get_images()[cam_name]
@@ -381,6 +359,7 @@ def main(args):
         # cv2.imshow('first_image', first_image_for_show)
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
+            print("in here")
             predictor.load_first_frame(first_image, 4)
             for cls in classes:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -390,8 +369,12 @@ def main(args):
                         points=no_obj_points,
                         labels=no_obj_labels,
                     )
+                init_masks.append(out_mask_logits)
+                if len(init_masks) ==4:
+                    predictor_ready = True
+                    print("INIT DONEEEEEEE")
             first_image = first_image[140:-100, :].copy() # crop height
-            
+                    
         if img_downsampling:
             first_image = cv2.resize(first_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
         first_image = rearrange(first_image, 'h w c -> c h w')
@@ -400,6 +383,9 @@ def main(args):
         if use_depth:
             first_depth = np.array([image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name]])
             depth_obs_history[cam_name] = np.repeat(first_depth[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0) #0xxx0xxx0
+    
+    while not predictor_ready:
+        time.sleep(0.1)
     
     if record_snapshot:
         head_img = image_recorder.get_images()['head_camera']     
@@ -503,23 +489,25 @@ def main(args):
                 for cam_name in camera_names:
                     current_image = image_recorder.get_images()[cam_name]
 
-                    if cam_name == 'head_camera':
+                    if cam_name == 'head_camera':                        
                         binary_mask, frame_with_mask = process_mask_frame(
-                            frame, predictor, click_points, classes, current_class,
+                            current_image, predictor, click_points, classes, current_class,
                             reset_flags={"reset": reset, "reset_class": reset_class, "current_frame_idx": current_frame_idx}
                         )
                         
                         current_image = current_image[140:-100, :].copy() # crop height
-                        current_mask = binary_mask[140:-100].copy()
-                        resized_mask = cv2.resize(current_mask, dsize=(1280, 480), interpolation=cv2.INTER_NEAREST)
-                        head_cam_masks = np.expand_dims(resized_mask, axis=0) 
+                        current_mask = binary_mask[:,140:-100].copy()
+                        current_mask = cv2.resize(current_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
+                        head_cam_mask = np.expand_dims(current_mask, axis=0) 
+                        head_cam_mask = np.expand_dims(head_cam_mask, axis=0)
+                        head_cam_mask = np.expand_dims(head_cam_mask, axis=0)
 
-                        yield (b'--frame\r\n'
-                            b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+                        print("head_cam_mask", head_cam_mask.shape)
+                        head_cam_mask = torch.from_numpy(head_cam_mask).float()
+
 
                         
-                    if img_downsampling:
-                        current_image = cv2.resize(current_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
+                    current_image = cv2.resize(current_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
                     # current_image = rearrange(image_recorder.get_images()[cam_name], 'h w c -> c h w')
                     current_image = rearrange(current_image, 'h w c -> c h w')
 
@@ -536,10 +524,11 @@ def main(args):
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
+                print("all cam", all_cam_images.shape)
 
-                mask_data_expanded = head_cam_masks.expand(3, -1, -1)
-                all_cam_images = torch.cat((all_cam_images, mask_data_expanded), dim=0)
-
+                mask_data_expanded = head_cam_mask.expand(1, 1, 3, -1, -1)
+                all_cam_images = np.concatenate((all_cam_images, mask_data_expanded), axis=0)  # (4, 1, 3, 240, 640)
+                
                 # move data into GPU
                 if use_gpu_for_inference:
                     if inference_batch == 1:
@@ -633,7 +622,7 @@ def main(args):
                 # print('all_action: ', all_actions)
             
 
-                # print('action: ', action)
+                print('action: ', action)
                 # print('robot_state: ', robot_state)
                 # for i in range(10):
                 #     t1 = time.time()
@@ -676,17 +665,17 @@ def main(args):
         # print('dsr_state_euler: ', dsr_state_euler)
         
         ###### COMMAND ROBOT (IMPORTANT) ######
-        # dsr.set_action(dsr_desired_pose)
-        # gripper.set_action(desired_gripper_pose)
+        dsr.set_action(dsr_desired_pose)
+        gripper.set_action(desired_gripper_pose)
         #########################################
         
         # dsr.step() # for ROS topic publish
         
 
-        if t_end-t0>0.05:
-            print("t3 - t2 (inference): ", t3-t2)
-            print("t_end - t0 (total): ", t_end-t0)
-            print(f"DSR commad duration {t_end-t0} is too long (over 50ms)")
+        # if t_end-t0>0.05:
+        #     print("t3 - t2 (inference): ", t3-t2)
+        #     print("t_end - t0 (total): ", t_end-t0)
+        #     print(f"DSR commad duration {t_end-t0} is too long (over 50ms)")
             
         rate.sleep()
         
@@ -846,5 +835,5 @@ def change_class():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_dir', action='store', type=str, help='Check Point Directory.', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='dsr_block_sort_demo_head_camera', required=False)
+    parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='mask_demo', required=False)
     main(vars(parser.parse_args()))

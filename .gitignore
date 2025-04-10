@@ -8,6 +8,7 @@ data_local
 _wandb
 ckpt
 MongoDB
+checkpoint
 
 **/.DS_Store
 
@@ -17,7 +18,7 @@ fuse.cfg
 
 # Generation results
 results/
-
+checkpoint/
 ray/auth.json
 
 # Byte-compiled / optimized / DLL files

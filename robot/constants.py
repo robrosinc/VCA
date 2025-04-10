@@ -43,8 +43,8 @@ TASK_CONFIGS = {
         # 'sample_weights': [3,1],
     },
     'mask_demo':{
-        'dataset_dir': ['/mnt/ddrive/Downloads'],
-        'episode_len': 3600,
+        'dataset_dir': [DATA_DIR + '/mask_demo/test'],
+        'episode_len': 10000,
         'train_ratio': 0.99,
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],
         'robot_id_list': ['dsr_l', 'dsr_r'],

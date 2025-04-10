@@ -151,7 +151,7 @@ class dsrSingleArmControl:
         if self.robot_id == 'dsr_l':
             self.drl_tcp_client = TcpClient(tcp_ip="192.168.0.77", tcp_port=777)
         elif self.robot_id == 'dsr_r':
-            self.drl_tcp_client = TcpClient(tcp_ip="192.168.0.80", tcp_port=780)
+            self.drl_tcp_client = TcpClient(tcp_ip="192.168.0.78", tcp_port=778)
         else:
             raise NotImplementedError
 
