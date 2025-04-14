@@ -197,7 +197,7 @@ class DETRVAE(nn.Module):
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            print(src.shape) # 8 512 8 160  for each camera 40
+            # print(src.shape) # 8 512 8 160  for each camera 40
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
