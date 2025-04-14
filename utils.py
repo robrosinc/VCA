@@ -240,21 +240,15 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 selected_masks = masks[img_sampling]  # Shape: (len(img_clipping), H, W)
 
                 # Crop the mask (adjust the indices as per your requirement)
-                cropped_mask = selected_masks[:, 140:-100]  # Crop along the height dimension
-
-                # Resize each mask to (1280, 480)
-                resized_masks = np.array([
-                    cv2.resize(mask, dsize=(1280, 480), interpolation=cv2.INTER_NEAREST)
-                    for mask in cropped_mask
-                ])
+                cropped_mask = selected_masks[:, 140:-100, :640]  # Crop along the height dimension
 
                 # Store in mask_list
-                mask_list["head_camera"] = resized_masks
+                mask_list["head_camera"] = cropped_mask
 
                 # Expand dimensions for batch processing (if needed)
-                head_cam_masks = np.expand_dims(mask_list["head_camera"], axis=1)  # Shape: (1, 1, 480, 1280)
-                head_cam_masks = np.expand_dims(head_cam_masks, axis=0)   # Shape: (1, 1, 1, 480, 1280) batch camera channel h w
-
+                head_cam_masks = np.expand_dims(mask_list["head_camera"], axis=1)  # Shape: (T, 1, 480, 1280)
+                head_cam_masks = np.expand_dims(head_cam_masks, axis=0)   # Shape: (1, T, 1, 480, 1280) camera temporal channel h w
+                # print(head_cam_masks.shape) # 1 T 1 240 640
                 if self.use_depth:
                     depth_image_dict = dict()
 
@@ -438,7 +432,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
                 for transform in self.transformations:
                     image_data = transform(image_data)
-                    mask_data = transform(mask_data)
 
             if self.img_debug:
                 image_data_for_show = torch.einsum(

@@ -107,6 +107,7 @@ def main(args):
             "state_dim": state_dim,
             "no_encoder": args["no_encoder"],
             "use_depth": use_depth,
+            "use_masks" : use_masks
         }
     elif policy_class == "Diffusion":
 
@@ -173,7 +174,7 @@ def main(args):
 
     if is_wandb:
         wandb.init(
-            project="SAMIL",
+            project="SAMIL-chunk2",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,
@@ -282,7 +283,7 @@ def forward_pass(data, policy):
         is_pad.cuda(),
     )
     return policy(
-        robot_proprio_data, image_data, action_data, is_pad
+        robot_proprio_data, image_data, actions = action_data, is_pad = is_pad
     )  # TODO remove None
 
 def forward_pass_with_masks(data, policy):
@@ -294,11 +295,9 @@ def forward_pass_with_masks(data, policy):
         is_pad.cuda(),
         mask_data.cuda(),
     )
-
-    mask_data_expanded = mask_data.expand(-1, 3, -1, 3, -1, -1)
-    image_data = torch.cat((image_data, mask_data_expanded), dim=1)
+    #mask 1 1 T 1 240 640
     return policy(
-        robot_proprio_data, image_data, action_data, is_pad
+        robot_proprio_data, image_data, mask_data, action_data, is_pad
     )  # TODO remove None
 
 

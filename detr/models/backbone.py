@@ -180,6 +180,7 @@ class Resnet10(nn.Module):
     def __init__(self, num_classes=1000):
         super().__init__()
         self.in_channels = 64
+        self.out_channels = 512
         
         # Conv1: Starts with stride 2 and padding 3
         self.conv1 = nn.Conv2d(1, self.in_channels, kernel_size=7, stride=2, padding=3, bias=False)
@@ -202,7 +203,7 @@ class Resnet10(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x[:, 0:1, :, :])))  # Use only the mask channel
+        out = F.relu(self.bn1(self.conv1(x)))
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
@@ -220,4 +221,5 @@ def build_mask_backbone(args):
     backbone = Resnet10(train_backbone)
 
     model = Joiner(backbone, position_embedding)
+    model.num_channels = backbone.out_channels
     return model

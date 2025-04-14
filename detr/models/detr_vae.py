@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 import torch.nn.functional as F
-from .backbone import build_backbone, build_backbone_with_mask
+from .backbone import build_backbone, build_mask_backbone
 from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
 
 import numpy as np
@@ -197,7 +197,7 @@ class DETRVAE(nn.Module):
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            # print(src.shape) # 8 512 8 160  for each camera 40
+            print(src.shape) # 8 512 8 160  for each camera 40
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
@@ -303,17 +303,9 @@ def build(args):
     # backbone = None # from state for now, no need for conv nets
     # From image
     backbones = []
-    if args.use_masks:
-        for cam in args.camera_names:
-            if cam == "head_camera":
-                backbone = build_backbone_with_mask(args)
-            else:
-                backbone = build_backbone(args)
-            backbones.append(backbone)
-    else:
-        for _ in args.camera_names:
-            backbone = build_backbone(args)
-            backbones.append(backbone)
+    for _ in args.camera_names:
+        backbone = build_backbone(args)
+        backbones.append(backbone)
 
     if args.use_depth:
         for _ in args.camera_names:
