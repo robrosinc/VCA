@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 import torch.nn.functional as F
-from .backbone import build_backbone, build_mask_backbone
+from .backbone import build_backbone, build_backbone_with_mask
 from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
 
 import numpy as np
@@ -34,7 +34,7 @@ def get_sinusoid_encoding_table(n_position, d_hid):
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbones, transformer, encoder, args):
+    def __init__(self, backbones, mask_backbones, transformer, encoder, args):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
@@ -54,6 +54,7 @@ class DETRVAE(nn.Module):
         self.encoder = encoder
         self.vq, self.vq_class, self.vq_dim = args.vq, args.vq_class, args.vq_dim
         self.state_dim, self.action_dim = args.state_dim, args.action_dim
+        self.use_masks = args.use_masks
         hidden_dim = transformer.d_model
         self.action_head = nn.Linear(hidden_dim, args.action_dim)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
@@ -62,12 +63,16 @@ class DETRVAE(nn.Module):
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
             self.backbones = nn.ModuleList(backbones)
             self.input_proj_robot_state = nn.Linear(self.state_dim*self.num_robot_observations, hidden_dim)
+            if mask_backbones is not None:
+                self.input_proj_masks = nn.Conv2d(mask_backbones[0].num_channels, hidden_dim, kernel_size = 1)
+                self.mask_backbones = nn.ModuleList(mask_backbones)
         else:
             # input_dim = 14 + 7 # robot_state + env_state
             self.input_proj_robot_state = nn.Linear(self.state_dim*self.num_robot_observations, hidden_dim)
             self.input_proj_env_state = nn.Linear(7, hidden_dim)
             self.pos = torch.nn.Embedding(2, hidden_dim)
             self.backbones = None
+            print("backbones is None")
 
         # encoder extra parameters
         self.latent_dim = 32 # final size of latent z # TODO tune
@@ -148,7 +153,7 @@ class DETRVAE(nn.Module):
 
         return latent_input, probs, binaries, mu, logvar
 
-    def forward(self, qpos, image, env_state, actions=None, is_pad=None, vq_sample=None, encoding_only=False):
+    def forward(self, qpos, image, env_state, masks = None, actions=None, is_pad=None, vq_sample=None, encoding_only=False):
         """
         qpos: batch, num_obs, robot_state_dim
         image: batch, num_cam, num_obs, channel, height, width
@@ -176,12 +181,23 @@ class DETRVAE(nn.Module):
                     del features, pos
 
             torch.cuda.empty_cache()
+            if self.mask_backbones is not None:
+                for i in range(len(self.mask_backbones)):
+                    for t in range(self.num_image_observations):
+                        features, pos = self.mask_backbones[i](masks[:, i, t])
+                        features = features[0] # take the last layer feature
+                        pos = pos[0]
+                        all_cam_features.append(self.input_proj_masks(features))
+                        all_cam_pos.append(pos)
+                        del features, pos
 
+                torch.cuda.empty_cache()
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos.reshape(bs, -1))
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
+            # print(src.shape) # 8 512 8 160  for each camera 40
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
@@ -287,20 +303,29 @@ def build(args):
     # backbone = None # from state for now, no need for conv nets
     # From image
     backbones = []
-    for _ in args.camera_names:
-        backbone = build_backbone(args)
-        backbones.append(backbone)
+    if args.use_masks:
+        for cam in args.camera_names:
+            if cam == "head_camera":
+                backbone = build_backbone_with_mask(args)
+            else:
+                backbone = build_backbone(args)
+            backbones.append(backbone)
+    else:
+        for _ in args.camera_names:
+            backbone = build_backbone(args)
+            backbones.append(backbone)
 
     if args.use_depth:
         for _ in args.camera_names:
             backbone = build_backbone(args)
             backbones.append(backbone)
 
+    mask_backbones = []
     if args.use_masks:
         for name in args.camera_names:
             if name == "head_camera":
-                backbone = build_mask_backbone(args)
-                backbones.append(backbone)
+                mask_backbone = build_mask_backbone(args)
+                mask_backbones.append(mask_backbone)
 
     transformer = build_transformer(args)
 
@@ -311,6 +336,7 @@ def build(args):
 
     model = DETRVAE(
         backbones,
+        mask_backbones,
         transformer,
         encoder,
         args,

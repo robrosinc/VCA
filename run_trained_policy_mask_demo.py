@@ -21,7 +21,7 @@ import cv2
 from tqdm import tqdm
 from scipy.spatial.transform import Rotation
 from flask import Flask, render_template, Response, request, jsonify
-from efficient_track_anything.build_efficienttam import build_efficienttam_camera_predictor
+from external.tamapp.efficient_track_anything.build_efficienttam import build_efficienttam_camera_predictor
 
 from policy import ACTPolicy, CNNMLPPolicy, DiffusionPolicy
 import torch
