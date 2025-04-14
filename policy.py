@@ -235,25 +235,23 @@ class ACTPolicy(nn.Module):
         self.vq = args_override["vq"]
         print(f"KL Weight {self.kl_weight}")
 
-    def __call__(self, robot_state, image, actions=None, is_pad=None, vq_sample=None):
+    def __call__(self, robot_state, image, masks=None, actions=None, is_pad=None, vq_sample=None):
         env_state = None
         normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
         )
         image = normalize(image)
         if actions is not None:  # training time
-            # actions = actions[:, :self.model.num_queries]
-            # is_pad = is_pad[:, :self.model.num_queries]
-
             loss_dict = dict()
-            a_hat, is_pad_hat, (mu, logvar), probs, binaries = self.model(
-                robot_state, image, env_state, actions, is_pad, vq_sample
-            )
-            # if self.vq or self.model.encoder is None:
-            if False:
-                total_kld = [torch.tensor(0.0)]
+            if masks is not None:
+                a_hat, is_pad_hat, (mu, logvar), probs, binaries = self.model(
+                    robot_state, image, env_state, masks, actions, is_pad, vq_sample
+                )
             else:
-                total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
+                a_hat, is_pad_hat, (mu, logvar), probs, binaries = self.model(
+                    robot_state, image, env_state, actions = actions, is_pad = is_pad, vq_sample = vq_sample
+                )
+            total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             if self.vq:
                 loss_dict["vq_discrepancy"] = F.l1_loss(
                     probs, binaries, reduction="mean"
@@ -263,12 +261,16 @@ class ACTPolicy(nn.Module):
             loss_dict["l1"] = l1
             loss_dict["kl"] = total_kld[0]
             loss_dict["loss"] = loss_dict["l1"] + loss_dict["kl"] * self.kl_weight
-            return loss_dict
+            return loss_dict    
         else:  # inference time
-            a_hat, _, (_, _), _, _ = self.model(
-                robot_state, image, env_state, vq_sample=vq_sample
-            )  # no action, sample from prior
-            # return a_hat, is_pad_hat
+            if masks is not None:
+                a_hat, _, (_, _), _, _ = self.model(
+                    robot_state, image, env_state, masks, vq_sample=vq_sample
+                )  # no action, sample from prior
+            else:
+                a_hat, _, (_, _), _, _ = self.model(
+                    robot_state, image, env_state, vq_sample=vq_sample
+                )  # no action, sample from prior
             return a_hat
 
     def encode(self, robot_state, actions, is_pad):
@@ -292,7 +294,7 @@ class ACTPolicy(nn.Module):
 
     def deserialize(self, model_dict):
         # print("model_dict: ", model_dict)
-        return self.load_state_dict(model_dict)
+        return self.load_state_dict(model_dict, strict=False)
 
 
 class CNNMLPPolicy(nn.Module):

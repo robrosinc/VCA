@@ -172,7 +172,7 @@ def get_args_parser():
         required=False,
     )
     parser.add_argument("--use_depth", action="store_true", default=False)
-
+    parser.add_argument("--use_masks", action="store_true", default=False)
     parser.add_argument("--temporal_agg", action="store_true")
     parser.add_argument("--use_vq", action="store_true")
     parser.add_argument(
