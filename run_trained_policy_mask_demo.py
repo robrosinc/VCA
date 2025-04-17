@@ -229,7 +229,6 @@ def main(args):
 
     image_obs_history = dict()
     depth_obs_history = dict()
-    mask_obs_history = dict()
     if relative_obs_mode:
         robot_obs_history = np.zeros((num_robot_obs+1, state_dim), dtype=np.float32)
         relative_robot_obs_history = np.zeros((num_robot_obs, state_dim), dtype=np.float32)
@@ -360,23 +359,20 @@ def main(args):
         # cv2.imshow('first_image', first_image_for_show)
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
-            if use_masks:
-                first_image_input = first_image[140:-100, :, :640].copy() # crop height
-                predictor.load_first_frame(first_image_input, 4)
-                for cls in classes:
-                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        _, _, out_mask_logits = predictor.add_new_points(
-                            frame_idx=0,
-                            obj_id=cls,
-                            points=no_obj_points,
-                            labels=no_obj_labels,
-                        )
-                    init_masks.append(out_mask_logits)
-                    if len(init_masks) ==4:
-                        predictor_ready = True
-                        print("INIT DONEEEEEEE")
-                        first_mask = np.expand_dims(out_mask_logits, axis=0)
-                        mask_obs_history[cam_name] = np.repeat(first_mask[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
+            print("in here")
+            predictor.load_first_frame(first_image, 4)
+            for cls in classes:
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    _, _, out_mask_logits = predictor.add_new_points(
+                        frame_idx=0,
+                        obj_id=cls,
+                        points=no_obj_points,
+                        labels=no_obj_labels,
+                    )
+                init_masks.append(out_mask_logits)
+                if len(init_masks) ==4:
+                    predictor_ready = True
+                    print("INIT DONEEEEEEE")
             first_image = first_image[140:-100, :].copy() # crop height
                     
         if img_downsampling:
@@ -405,7 +401,7 @@ def main(args):
         global current_frame_idx, reset
         current_frame_idx += 1
         new_input, first_hit = False, True
-        head_cam_mask = None
+        head_cam_masks = None
 
         t0 = time.time() #
         dsr_state_xpos = dsr.get_xpos()
@@ -493,25 +489,22 @@ def main(args):
                 for cam_name in camera_names:
                     current_image = image_recorder.get_images()[cam_name]
 
-                    if cam_name == 'head_camera':
-                        if use_masks:
-                            image_input = current_image[140:-100, :, :640].copy() # crop height
-                            binary_mask, _ = process_mask_frame(
-                                image_input, predictor, click_points, classes, current_class,
-                                reset_flags={"reset": reset, "reset_class": reset_class, "current_frame_idx": current_frame_idx}
-                            )
-
+                    if cam_name == 'head_camera':                        
+                        binary_mask, frame_with_mask = process_mask_frame(
+                            current_image, predictor, click_points, classes, current_class,
+                            reset_flags={"reset": reset, "reset_class": reset_class, "current_frame_idx": current_frame_idx}
+                        )
+                        
                         current_image = current_image[140:-100, :].copy() # crop height
-                        head_cam_mask = np.expand_dims(binary_mask, axis=0) # add chanel dimension
-                        head_cam_mask = np.expand_dims(head_cam_mask, axis=0) # add temporal dimension
-                        head_cam_mask = np.expand_dims(head_cam_mask, axis=0) # add camera dimension
+                        current_mask = binary_mask[:,140:-100].copy()
+                        current_mask = cv2.resize(current_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
+                        head_cam_mask = np.expand_dims(current_mask, axis=0) 
+                        head_cam_mask = np.expand_dims(head_cam_mask, axis=0)
+                        head_cam_mask = np.expand_dims(head_cam_mask, axis=0)
 
-                        # print("head_cam_mask", head_cam_mask.shape)
-                        if num_image_obs >1:
-                            mask_obs_history[cam_name][1:] =  mask_obs_history[cam_name][:-1]
-                            mask_obs_history[cam_name][0] = head_cam_mask
-                        else:
-                            mask_obs_history[cam_name][0] = head_cam_mask
+                        print("head_cam_mask", head_cam_mask.shape)
+                        head_cam_mask = torch.from_numpy(head_cam_mask).float()
+
 
                         
                     current_image = cv2.resize(current_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
@@ -531,22 +524,10 @@ def main(args):
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
-                print("all cam images", all_cam_images.shape)
+                print("all cam", all_cam_images.shape)
 
-                if use_masks:
-                    all_cam_masks = []
-                    for cam_name in camera_names:
-                        all_cam_masks.append(np.array(mask_obs_history[cam_name])[image_sampling])
-
-                    all_cam_masks = np.stack(all_cam_masks, axis=0)
-                    if use_gpu_for_inference:
-                        if inference_batch == 1:
-                            cam_masks = torch.from_numpy(all_cam_masks).float().cuda().unsqueeze(0)
-                        else:
-                            cam_masks = torch.from_numpy(all_cam_masks).float().cuda().unsqueeze(0).repeat_interleave(inference_batch, dim=0)
-                    else:
-                        cam_masks = torch.from_numpy(all_cam_masks / 255.0).float().cpu().unsqueeze(0)
-                    print("cam masks", cam_masks.shape)
+                mask_data_expanded = head_cam_mask.expand(1, 1, 3, -1, -1)
+                all_cam_images = np.concatenate((all_cam_images, mask_data_expanded), axis=0)  # (4, 1, 3, 240, 640)
                 
                 # move data into GPU
                 if use_gpu_for_inference:
@@ -562,7 +543,7 @@ def main(args):
 
                 t2 = time.time()
                 # policy inference
-                all_actions = policy(robot_obs_history_torch, cam_images, cam_masks) # action dim: [1, chunk_size, action_dim]
+                all_actions = policy(robot_obs_history_torch, cam_images) # action dim: [1, chunk_size, action_dim]
                 t3 = time.time()
                 all_actions = all_actions.cpu().numpy()
                 all_actions = all_actions[0]
