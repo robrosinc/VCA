@@ -64,3 +64,4 @@ python train.py \
 # mask demo
 
 python train.py --ckpt_dir /mnt/ddrive/Downloads --policy_class ACT --task_name mask_demo --batch_size 8 --chunk_size 24 --robot_obs_size 2 --img_obs_size 2 --img_obs_every 20 --seed 10 --num_steps 100000 --lr 1e-4 --resume_ckpt_path /mnt/ddrive/Downloads/policy_step_23_seed_10.ckpt --wandb --validate_every 10000 --use_masks --save_every 1000
+python train.py --ckpt_dir /home/app/dataset --policy_class ACT --task_name mask_demo --batch_size 16 --chunk_size 24 --robot_obs_size 2 --img_obs_size 2 --img_obs_every 20 --seed 10 --num_steps 100000 --lr 1e-4 --wandb --validate_every 10000 --use_masks --save_every 5000
