@@ -196,7 +196,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_17600_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_4400_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -291,6 +291,8 @@ def main(args):
             images = image_recorder.get_images()
 
         images_size[cam_name] = images[cam_name].shape # h w c
+        if cam_name == 'head_camera':
+            print("size:", images_size[cam_name])
 
     print('Are you ready?')
     for cnt in range(3):
@@ -362,7 +364,7 @@ def main(args):
         if cam_name == 'head_camera':
             first_image = first_image[140:-100, :].copy() # crop height
             if use_masks:
-                first_input = first_image[:,:,:640].copy()
+                first_input = first_image[:,:640].copy()
                 predictor.load_first_frame(first_input, 4)
                 for cls in classes:
                     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -376,9 +378,11 @@ def main(args):
                     if len(init_masks) ==4:
                         predictor_ready = True
                         print("INIT DONEEEEEEE")
-                        first_mask = np.expand_dims(out_mask_logits, axis=0)
+                        first_mask = out_mask_logits[0].cpu().numpy()
+                        first_mask = (first_mask > 0).astype(np.float32) * 255
+                        print('first mask', first_mask.shape)
                         mask_obs_history[cam_name] = np.repeat(first_mask[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
-                    
+                        mask_obs_history['head_camera'][0] = (first_mask > 0).astype(np.float32) * 255
         if img_downsampling:
             first_image = cv2.resize(first_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
         first_image = rearrange(first_image, 'h w c -> c h w')
@@ -496,22 +500,20 @@ def main(args):
                     if cam_name == 'head_camera':
                         current_image = current_image[140:-100, :].copy() # crop height
                         if use_masks:
-                            current_input = current_image[:,:,:640].copy()
+                            current_input = current_image[:,:640].copy()
                             binary_mask, _ = process_mask_frame(
                                 current_input, predictor, click_points, classes, current_class,
                                 reset_flags={"reset": reset, "reset_class": reset_class, "current_frame_idx": current_frame_idx}
                             )
 
-                            head_cam_masks = np.expand_dims(binary_mask, axis=0) # channel dim
-                            head_cam_masks = np.expand_dims(head_cam_masks, axis=0) # temporal dim
-                            current_mask = np.expand_dims(head_cam_masks, axis=0) # camera dim
+                            # current_mask = np.expand_dims(binary_mask, axis=0) # channel dim
 
-                            print("head_cam_mask", head_cam_masks.shape)
+                            print("head_cam_mask", binary_mask.shape)
                             if num_image_obs >1:
                                 mask_obs_history[cam_name][1:] =  mask_obs_history[cam_name][:-1]
-                                mask_obs_history[cam_name][0] = current_mask
+                                mask_obs_history[cam_name][0] = binary_mask
                             else:
-                                mask_obs_history[cam_name][0] = current_mask
+                                mask_obs_history[cam_name][0] = binary_mask
                         
                     current_image = cv2.resize(current_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
                     # current_image = rearrange(image_recorder.get_images()[cam_name], 'h w c -> c h w')
@@ -524,19 +526,20 @@ def main(args):
                     else:
                         image_obs_history[cam_name][0] = current_image
                     
-
+                print('image obs', image_obs_history['head_camera'].shape)
                 all_cam_images = []
                 for cam_name in camera_names:
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
                 print("all cam", all_cam_images.shape)
-
+                print('mask_obs_histroy', mask_obs_history['head_camera'].shape)
                 if use_masks:
                     all_cam_masks = []
                     for cam_name in camera_names:
-                        all_cam_masks.append(np.array(mask_obs_history[cam_name])[image_sampling])
-                    all_cam_masks = np.stack(all_cam_masks, axis =0)
+                        if cam_name == "head_camera":
+                            all_cam_masks.append(np.array(mask_obs_history[cam_name])[image_sampling])
+                            all_cam_masks = np.stack(all_cam_masks, axis =0)
 
                 # move data into GPU
                 if use_gpu_for_inference:
@@ -555,7 +558,7 @@ def main(args):
                     cam_images = torch.from_numpy(all_cam_images / 255.0).float().cpu().unsqueeze(0)
                     if use_masks:
                         cam_masks = torch.from_numpy(all_cam_masks).float().cpu().unsqueeze(0)
-
+                print("image", cam_images.shape, "masks", cam_masks.shape)
                 t2 = time.time()
                 # policy inference
                 all_actions = policy(robot_obs_history_torch, cam_images, cam_masks) # action dim: [1, chunk_size, action_dim]
@@ -680,8 +683,8 @@ def main(args):
         # print('dsr_state_euler: ', dsr_state_euler)
         
         ###### COMMAND ROBOT (IMPORTANT) ######
-        dsr.set_action(dsr_desired_pose)
-        gripper.set_action(desired_gripper_pose)
+        # dsr.set_action(dsr_desired_pose)
+        # gripper.set_action(desired_gripper_pose)
         #########################################
         
         # dsr.step() # for ROS topic publish

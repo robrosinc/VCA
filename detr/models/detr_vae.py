@@ -312,8 +312,9 @@ def build(args):
             backbone = build_backbone(args)
             backbones.append(backbone)
 
-    mask_backbones = []
+    mask_backbones = None
     if args.use_masks:
+        mask_backbones = []
         for name in args.camera_names:
             if name == "head_camera":
                 mask_backbone = build_mask_backbone(args)
