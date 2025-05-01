@@ -2,7 +2,7 @@ import pathlib
 import os
 
 ### Task parameters
-DATA_DIR = os.path.expanduser('~/dg/IL_data')
+DATA_DIR = os.path.expanduser('/dataset/with_mask')
 TASK_CONFIGS = {
     ### BLOCK SORT
     'dsr_block_collect':{
@@ -43,7 +43,7 @@ TASK_CONFIGS = {
         # 'sample_weights': [3,1],
     },
     'mask_demo':{
-        'dataset_dir': [DATA_DIR + '/mask_demo/test'],
+        'dataset_dir': [DATA_DIR],
         'episode_len': 10000,
         'train_ratio': 0.99,
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],

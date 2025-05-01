@@ -13,7 +13,12 @@ import wandb
 import time
 import torchvision.transforms.v2 as transforms
 import GPUtil
-
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torch.nn as nn
+import torch.optim as optim
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 
 from robot.constants import HZ
 from utils import load_data  # data functions
@@ -28,6 +33,15 @@ import IPython
 
 e = IPython.embed
 
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group(
+        backend='nccl',
+        rank=rank, 
+        world_size=world_size
+        )
+    torch.cuda.set_device(rank)
 
 def get_auto_index(dataset_dir):
     max_idx = 1000
@@ -38,7 +52,7 @@ def get_auto_index(dataset_dir):
 
 
 def main(args):
-    set_seed(1)
+    seed = args["seed"]
     # command line parameters
     is_wandb = args["wandb"]
     use_depth = args["use_depth"]
@@ -164,7 +178,8 @@ def main(args):
         "load_pretrain": args["load_pretrain"],
         "actuator_config": actuator_config,
         "wandb": is_wandb,
-        "use_masks": use_masks
+        "use_masks": use_masks,
+        "batch_size": batch_size_train,
     }
 
     if not os.path.isdir(ckpt_dir):
@@ -174,7 +189,7 @@ def main(args):
 
     if is_wandb:
         wandb.init(
-            project="SAMIL-chunk2",
+            project="SAMIL-multigpu",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,
@@ -183,7 +198,7 @@ def main(args):
     with open(config_path, "wb") as f:
         pickle.dump(config, f)
 
-    train_dataloader, val_dataloader, stats, _ = load_data(
+    train_dataset, val_dataset, stats, _ = load_data(
         dataset_dir,
         name_filter,
         camera_names,
@@ -207,14 +222,12 @@ def main(args):
     stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
     with open(stats_path, "wb") as f:
         pickle.dump(stats, f)
+    world_size = torch.cuda.device_count()
+    mp.spawn(train_bc,
+            args=(world_size, seed, train_dataset, val_dataset, config),
+            nprocs=world_size,
+            join=True)
 
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
-    best_step, min_val_loss, best_state_dict = best_ckpt_info
-
-    # save best checkpoint
-    ckpt_path = os.path.join(ckpt_dir, f"policy_best.ckpt")
-    torch.save(best_state_dict, ckpt_path)
-    print(f"Best ckpt, val loss {min_val_loss:.6f} @ step{best_step}")
     if is_wandb:
         wandb.finish()
 
@@ -293,15 +306,35 @@ def forward_pass_with_masks(data, policy):
         robot_proprio_data.cuda(),
         action_data.cuda(),
         is_pad.cuda(),
-        mask_data.cuda(),
+        mask_data.float().cuda(),
     )
-    #mask 1 1 T 1 240 640
+    # print(mask_data.shape) #mask 1 1 T 1 240 640
     return policy(
         robot_proprio_data, image_data, mask_data, action_data, is_pad
     )  # TODO remove None
 
 
-def train_bc(train_dataloader, val_dataloader, config):
+def train_bc(rank, world_size, seed, train_dataset, val_dataset, config):
+    setup(rank, world_size)
+    set_seed(seed + rank)
+
+    train_sampler = DistributedSampler(train_dataset, shuffle=True)
+    val_sampler   = DistributedSampler(val_dataset,   shuffle=False)
+
+    # 4) REBUILD DataLoaders with those samplers
+    train_loader = DataLoader(train_dataset,
+                              batch_size=config["batch_size"],
+                              sampler=train_sampler,
+                              num_workers=8,
+                              pin_memory=True,
+                              drop_last=True)
+    val_loader   = DataLoader(val_dataset,
+                              batch_size=config["batch_size"],
+                              sampler=val_sampler,
+                              num_workers=8,
+                              pin_memory=True,
+                              drop_last=False)
+
     num_steps = config["num_steps"]
     ckpt_dir = config["ckpt_dir"]
     seed = config["seed"]
@@ -310,113 +343,59 @@ def train_bc(train_dataloader, val_dataloader, config):
     eval_every = config["eval_every"]
     validate_every = config["validate_every"]
     save_every = config["save_every"]
-    is_wandb = config["wandb"]
+    is_wandb = config["wandb"] and (rank == 0)
     use_masks = config["use_masks"]
 
-    set_seed(seed)
     validation_iteration = 50
     train_iteration = 5e2
     
     policy = make_policy(policy_class, policy_config)
-    if config["load_pretrain"]:
-        # loading_status = policy.deserialize(torch.load(os.path.join('/home/zfu/interbotix_ws/src/act/ckpts/pretrain_all', 'policy_step_50000_seed_0.ckpt')))
-        print(f"loaded! {loading_status}")
+    optimizer = make_optimizer(policy_class, policy)
+    policy.cuda(rank)
+    policy = DDP(policy, device_ids=[rank], find_unused_parameters=True)
 
     if config["resume_ckpt_path"] is not None:
-        checkpoint = torch.load(config["resume_ckpt_path"], map_location= lambda storage, loc : storage.cuda(0))
-        loading_status = policy.deserialize(checkpoint)
+        ckpt = torch.load(config["resume_ckpt_path"], map_location= lambda storage, loc : storage.cuda(rank))
+        optimizer.load_state_dict(ckpt['optim_state'])
+        loading_status = policy.model.deserialize(ckpt['model_state'])
         print(
             f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}'
         )
-    policy.cuda()
-    optimizer = make_optimizer(policy_class, policy)
 
     min_val_loss = np.inf
     best_ckpt_info = None
 
-    train_dataloader = repeater(train_dataloader)
+    train_dataloader = repeater(train_loader)
+    current_epoch = 0
+
     for step in tqdm(range(num_steps), dynamic_ncols=True):
-        # validation
-        if False and step % validate_every == 0:
-            print("validating")
-
-            with torch.inference_mode():
-                policy.eval()
-                validation_dicts = []
-                for batch_idx, data in tqdm(
-                    enumerate(val_dataloader),
-                    total=validation_iteration,
-                    dynamic_ncols=True,
-                ):
-                    # t0 = time.time()
-                    if use_masks:
-                        forward_dict = forward_pass_with_masks(data, policy)
-                    else:
-                        forward_dict = forward_pass(data, policy)
-                    validation_dicts.append(forward_dict)
-                    # t1 = time.time()
-                    # print(t1-t0)
-                    if batch_idx >= validation_iteration:
-                        break
-
-                validation_summary = compute_dict_mean(validation_dicts)
-
-                epoch_val_loss = validation_summary["loss"]
-                if epoch_val_loss < min_val_loss:
-                    min_val_loss = epoch_val_loss
-                    best_ckpt_info = (step, min_val_loss, deepcopy(policy.serialize()))
-            for k in list(validation_summary.keys()):
-                validation_summary[f"val_{k}"] = validation_summary.pop(k)
-            if is_wandb:
-                wandb.log(validation_summary, step=step)
-            print(f"Val loss:   {epoch_val_loss:.5f}")
-            summary_string = ""
-            for k, v in validation_summary.items():
-                summary_string += f"{k}: {v.item():.3f} "
-            print(summary_string)
-
-        # evaluation
-        if (step > 0) and (step % eval_every == 0):
-            # first save then eval
-            ckpt_name = f"policy_step_{step}_seed_{seed}.ckpt"
-            ckpt_path = os.path.join(ckpt_dir, ckpt_name)
-            torch.save(policy.serialize(), ckpt_path)
-            # success, _ = eval_bc(config, ckpt_name, save_episode=True, num_rollouts=10)
-            # if is_wandb:
-            #     wandb.log({'success': success}, step=step)
-
-        # training
         policy.train()
-
         data = next(train_dataloader)
         if use_masks:
             forward_dict = forward_pass_with_masks(data, policy)
         else:
             forward_dict = forward_pass(data, policy)
 
-        # backward
+        optimizer.zero_grad()
         loss = forward_dict["loss"]
         loss.backward()
         optimizer.step()
-        optimizer.zero_grad()
+
+        if step % len(train_loader) == 0:
+            current_epoch +=1
+            train_sampler.set_epoch(current_epoch)
 
         if is_wandb:
             wandb.log(forward_dict, step=step)  # not great, make training 1-2% slower
 
-        if step % save_every == 0:
+        if step % save_every == 0 and rank ==0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_step_{step}_seed_{seed}.ckpt")
-            torch.save(policy.serialize(), ckpt_path)
+            torch.save({
+                'model_state': policy.module.serialize(),
+                'optim_state' : optimizer.state_dict(),
+            }, ckpt_path)
 
-    ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
-    torch.save(policy.serialize(), ckpt_path)
-
-    best_step, min_val_loss, best_state_dict = best_ckpt_info
-    ckpt_path = os.path.join(ckpt_dir, f"policy_step_{best_step}_seed_{seed}.ckpt")
-    torch.save(best_state_dict, ckpt_path)
-    print(
-        f"Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at step {best_step}"
-    )
-
+    dist.destroy_process_group()
     return best_ckpt_info
 
 

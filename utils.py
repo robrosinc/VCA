@@ -6,7 +6,7 @@ import pickle
 import fnmatch
 import cv2
 from time import time
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
 import torchvision.transforms as transforms
 from scipy.spatial.transform import Rotation
 
@@ -198,6 +198,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 t2 = time()
                 # print('robot_state shape', original_robot_shape) # (2000, 7)
                 image_dict = dict()
+                mask_dict = dict()
                 img_sampling = np.clip(
                     range(
                         start_ts,
@@ -212,7 +213,11 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     image_dict[cam_name] = np.array(
                         root[f"/observations/images/{cam_name}"]
                     )[img_sampling]
-                    
+                    if cam_name == "head_camera":
+                        mask_dict[cam_name] = np.expand_dims(np.array(
+                            root[f"/observations/masks/{cam_name}_masks"]
+                        )[img_sampling, :, :640], axis=1)
+                # print("here", mask_dict['head_camera'].shape) # 2 1 240 640
                 t3 = time()
                 if compressed:
                     for cam_name in image_dict.keys():
@@ -228,27 +233,16 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         # print('image_dict[cam_name].shape', image_dict[cam_name].shape)
                 t4 = time()
 
-                mask_list = {}
-
-                # Assuming 'root' is the HDF5 file object
-                mask_data = root["/observations/masks/head_camera_masks"]  # Load masks from HDF5
-
-                # Convert to numpy array
-                masks = mask_data[:]  # Shape: (T, H, W), where T is the number of frames, H is height, W is width
-
-                # Select only the masks at indexes in img_sampling
-                selected_masks = masks[img_sampling]  # Shape: (len(img_clipping), H, W)
-
-                # Crop the mask (adjust the indices as per your requirement)
-                cropped_mask = selected_masks[:, 140:-100, :640]  # Crop along the height dimension
-
-                # Store in mask_list
-                mask_list["head_camera"] = cropped_mask
-
-                # Expand dimensions for batch processing (if needed)
-                head_cam_masks = np.expand_dims(mask_list["head_camera"], axis=1)  # Shape: (T, 1, 480, 1280)
-                head_cam_masks = np.expand_dims(head_cam_masks, axis=0)   # Shape: (1, T, 1, 480, 1280) camera temporal channel h w
-                # print(head_cam_masks.shape) # 1 T 1 240 640
+                all_cam_masks = []
+                for cam_name in self.camera_names:
+                    if cam_name =='head_camera':
+                        cropped_mask = mask_dict[cam_name]
+                        for t in range(len(mask_dict[cam_name])):
+                            mask_dict[cam_name][t] = cropped_mask[t]
+                        all_cam_masks.append(mask_dict[cam_name])
+                all_cam_masks = np.stack(all_cam_masks, axis=0)
+                # print(all_cam_masks.shape) # 1 T 1 240 640
+                
                 if self.use_depth:
                     depth_image_dict = dict()
 
@@ -365,10 +359,10 @@ class EpisodicDataset(torch.utils.data.Dataset):
             all_cam_images = []
             for cam_name in self.camera_names:
                 # crop and resize head img
-                if cam_name == 'head_camera':
-                    cropped_img = image_dict[cam_name][:, 140:-100, :] # crop height
-                    for t in range(len(image_dict[cam_name])):
-                        image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(1280, 480), interpolation=cv2.INTER_LINEAR)
+                # if cam_name == 'head_camera':
+                #     cropped_img = image_dict[cam_name][:, 140:-100, :] # crop height
+                #     for t in range(len(image_dict[cam_name])):
+                #         image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(1280, 480), interpolation=cv2.INTER_LINEAR)
 
                 all_cam_images.append(image_dict[cam_name])
 
@@ -377,7 +371,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     all_cam_images.append(depth_image_dict[cam_name])
 
             all_cam_images = np.stack(all_cam_images, axis=0)
-            head_cam_masks = np.stack(head_cam_masks, axis=0)
 
             # print('all_cam_images:', all_cam_images.shape)
             # all_cam_images = all_cam_images[:, :start_ts+1]
@@ -399,7 +392,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
             action_data = torch.from_numpy(np.array(padded_action)).float()
             robot_state_data = torch.from_numpy(np.array(padded_robot_state)).float()
             image_data = torch.from_numpy(np.array(all_cam_images))
-            mask_data = torch.from_numpy(head_cam_masks).float()
+            mask_data = torch.from_numpy(all_cam_masks).float()
             is_pad = torch.from_numpy(is_pad).bool()
             # channel last
             image_data = torch.einsum("k t h w c -> k t c h w", image_data)
@@ -432,6 +425,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
                 for transform in self.transformations:
                     image_data = transform(image_data)
+                mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
 
             if self.img_debug:
                 image_data_for_show = torch.einsum(
@@ -497,6 +491,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
         # print("duration 8: ", t8-t7)
         # print("duration 9: ", t9-t8)
         # print(image_data.dtype, qpos_data.dtype, action_data.dtype, is_pad.dtype)
+        # print("image", image_data.shape, "mask", mask_data.shape) # 3 2 3 240 640 / 1 2 1 240 640
         return image_data, robot_state_data, action_data, is_pad, mask_data
 
 
@@ -812,35 +807,32 @@ def load_data(
         policy_class,
         use_depth,
     )
+    return train_dataset, val_dataset, norm_stats, train_dataset.is_sim
+    # train_sampler = DistributedSampler(train_dataset, shuffle= True)
+    # val_sampler = DistributedSampler(val_dataset, shuffle = False)
+
+    # batch_sampler_train = BatchSampler(batch_size_train, train_episode_len_l, sample_weights)
+    # batch_sampler_val = BatchSampler(batch_size_val, val_episode_len_l, None)
     
-    batch_sampler_train = BatchSampler(batch_size_train, train_episode_len_l, sample_weights)
-    batch_sampler_val = BatchSampler(batch_size_val, val_episode_len_l, None)
-    
-    train_num_workers = 20 if os.getlogin() == "robrosdg" else 8
-    val_num_workers = 20 if os.getlogin() == "robrosdg" else 8
-    print(
-        f"Augment images: {train_dataset.augment_images}, train_num_workers: {train_num_workers}, val_num_workers: {val_num_workers}"
-    )
-    train_dataloader = DataLoader(
-        train_dataset,
-        batch_sampler=batch_sampler_train,
-        pin_memory=True,
-        num_workers=train_num_workers,
-        prefetch_factor=2,
-    )
-    val_dataloader = DataLoader(
-        val_dataset,
-        batch_sampler=batch_sampler_val,
-        pin_memory=True,
-        num_workers=val_num_workers,
-        prefetch_factor=2,
-    )
-
-    return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
-
-
-
-### helper functions
+    # train_num_workers = 20 if os.getlogin() == "robrosdg" else 8
+    # val_num_workers = 20 if os.getlogin() == "robrosdg" else 8
+    # print(
+    #     f"Augment images: {train_dataset.augment_images}, train_num_workers: {train_num_workers}, val_num_workers: {val_num_workers}"
+    # )
+    # train_dataloader = DataLoader(
+    #     train_dataset,
+    #     batch_sampler=batch_sampler_train,
+    #     pin_memory=True,
+    #     num_workers=4,
+    #     prefetch_factor=2,
+    # )
+    # val_dataloader = DataLoader(
+    #     val_dataset,
+    #     batch_sampler=batch_sampler_val,
+    #     pin_memory=True,
+    #     num_workers=4,
+    #     prefetch_factor=2,
+    # )
 
 
 def compute_dict_mean(epoch_dicts):
