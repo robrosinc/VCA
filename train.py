@@ -33,15 +33,23 @@ import IPython
 
 e = IPython.embed
 
-def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+def setup():
+    rank       = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+
+    torch.cuda.set_device(local_rank)
+
     dist.init_process_group(
-        backend='nccl',
-        rank=rank, 
-        world_size=world_size
-        )
-    torch.cuda.set_device(rank)
+        backend="nccl",
+        init_method="env://",
+        rank=rank,
+        world_size=world_size,
+    )
+    return rank, world_size, local_rank
+
+def cleanup():
+    dist.destroy_process_group()
 
 def get_auto_index(dataset_dir):
     max_idx = 1000
@@ -49,189 +57,6 @@ def get_auto_index(dataset_dir):
         if not os.path.isfile(os.path.join(dataset_dir, f"qpos_{i}.npy")):
             return i
     raise Exception(f"Error getting auto index, or more than {max_idx} episodes")
-
-
-def main(args):
-    seed = args["seed"]
-    # command line parameters
-    is_wandb = args["wandb"]
-    use_depth = args["use_depth"]
-    use_masks = args["use_masks"]
-    ckpt_dir = args["ckpt_dir"]
-    policy_class = args["policy_class"]
-    onscreen_render = args["onscreen_render"]
-    task_name = args["task_name"]
-    batch_size_train = args["batch_size"]
-    batch_size_val = args["batch_size"]
-    num_steps = args["num_steps"]
-    eval_every = args["eval_every"]
-    validate_every = args["validate_every"]
-    save_every = args["save_every"]
-    resume_ckpt_path = args["resume_ckpt_path"]
-
-    # get task parameters
-    is_sim = task_name[:4] == "sim_"
-    if is_sim or task_name == "all":
-        from robot.constants import SIM_TASK_CONFIGS
-
-        task_config = SIM_TASK_CONFIGS[task_name]
-    else:
-        from robot.constants import TASK_CONFIGS
-
-        task_config = TASK_CONFIGS[task_name]
-    dataset_dir = task_config["dataset_dir"]
-    # num_episodes = task_config['num_episodes']
-    episode_len = task_config["episode_len"]
-    camera_names = task_config["camera_names"]
-    stats_dir = task_config.get("stats_dir", None)
-    sample_weights = task_config.get("sample_weights", None)
-    train_ratio = task_config.get("train_ratio", 0.99)
-    name_filter = task_config.get("name_filter", lambda n: True)
-
-    # fixed parameters
-    state_dim = 29
-    action_dim = 20
-    lr_backbone = args["lr"]
-    backbone = "resnet34"
-    # backbone = "vit_b_16"
-    # backbone = None
-    if policy_class == "ACT":
-        enc_layers = 4
-        dec_layers = 7
-        nheads = 8
-        policy_config = {
-            "lr": args["lr"],
-            "num_queries": args["chunk_size"],
-            "num_robot_observations": args["robot_obs_size"],
-            "num_image_observations": args["img_obs_size"],
-            "image_observation_skip": args["img_obs_every"],
-            "kl_weight": args["kl_weight"],
-            "hidden_dim": args["hidden_dim"],
-            "dim_feedforward": args["dim_feedforward"],
-            "lr_backbone": lr_backbone,
-            "backbone": backbone,
-            "enc_layers": enc_layers,
-            "dec_layers": dec_layers,
-            "nheads": nheads,
-            "camera_names": camera_names,
-            "vq": args["use_vq"],
-            "vq_class": args["vq_class"],
-            "vq_dim": args["vq_dim"],
-            "action_dim": action_dim,
-            "state_dim": state_dim,
-            "no_encoder": args["no_encoder"],
-            "use_depth": use_depth,
-            "use_masks" : use_masks
-        }
-    elif policy_class == "Diffusion":
-
-        policy_config = {
-            "lr": args["lr"],
-            "camera_names": camera_names,
-            "action_dim": action_dim,
-            "state_dim": state_dim,
-            "observation_horizon": 1,
-            "action_horizon": 8,
-            "prediction_horizon": args["chunk_size"],
-            "num_queries": args["chunk_size"],
-            "num_robot_observations": args["robot_obs_size"],
-            "num_inference_timesteps": 10,
-            "ema_power": 0.75,
-            "vq": False,
-        }
-    elif policy_class == "CNNMLP":
-        policy_config = {
-            "lr": args["lr"],
-            "lr_backbone": lr_backbone,
-            "backbone": backbone,
-            "num_queries": 1,
-            "camera_names": camera_names,
-        }
-    else:
-        raise NotImplementedError(f"policy class {policy_class} is not defined")
-
-    actuator_config = {
-        "actuator_network_dir": args["actuator_network_dir"],
-        "history_len": args["history_len"],
-        "future_len": args["future_len"],
-        "prediction_len": args["prediction_len"],
-    }
-
-    config = {
-        "num_steps": num_steps,
-        "eval_every": eval_every,
-        "validate_every": validate_every,
-        "save_every": save_every,
-        "ckpt_dir": ckpt_dir,
-        "resume_ckpt_path": resume_ckpt_path,
-        "episode_len": episode_len,
-        "state_dim": state_dim,
-        "lr": args["lr"],
-        "policy_class": policy_class,
-        "onscreen_render": onscreen_render,
-        "policy_config": policy_config,
-        "task_name": task_name,
-        "seed": args["seed"],
-        "temporal_agg": args["temporal_agg"],
-        "camera_names": camera_names,
-        "real_robot": not is_sim,
-        "load_pretrain": args["load_pretrain"],
-        "actuator_config": actuator_config,
-        "wandb": is_wandb,
-        "use_masks": use_masks,
-        "batch_size": batch_size_train,
-    }
-
-    if not os.path.isdir(ckpt_dir):
-        os.makedirs(ckpt_dir)
-    config_path = os.path.join(ckpt_dir, "config.pkl")
-    expr_name = ckpt_dir.split("/")[-1]
-
-    if is_wandb:
-        wandb.init(
-            project="SAMIL-multigpu",
-            reinit=True,
-            entity="donggunkim-kyung-hee-university",
-            name=expr_name,
-        )
-        wandb.config.update(config)
-    with open(config_path, "wb") as f:
-        pickle.dump(config, f)
-
-    train_dataset, val_dataset, stats, _ = load_data(
-        dataset_dir,
-        name_filter,
-        camera_names,
-        batch_size_train,
-        batch_size_val,
-        args["chunk_size"],
-        args["robot_obs_size"],
-        args["img_obs_size"],
-        args["img_obs_every"],
-        args["skip_mirrored_data"],
-        config["load_pretrain"],
-        policy_class,
-        stats_dir_l=stats_dir,
-        sample_weights=sample_weights,
-        train_ratio=train_ratio,
-        use_depth=use_depth,
-    )
-
-    # GPUtil.showUtilization()
-    # save dataset stats
-    stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
-    with open(stats_path, "wb") as f:
-        pickle.dump(stats, f)
-    world_size = torch.cuda.device_count()
-    mp.spawn(train_bc,
-            args=(world_size, seed, train_dataset, val_dataset, config),
-            nprocs=world_size,
-            join=True)
-
-    if is_wandb:
-        wandb.finish()
-
-    torch.cuda.empty_cache()
 
 
 def make_policy(policy_class, policy_config):
@@ -314,12 +139,159 @@ def forward_pass_with_masks(data, policy):
     )  # TODO remove None
 
 
-def train_bc(rank, world_size, seed, train_dataset, val_dataset, config):
-    setup(rank, world_size)
+def main( args):
+    rank, world_size, local_rank = setup()
+    seed = args["seed"]
     set_seed(seed + rank)
 
-    train_sampler = DistributedSampler(train_dataset, shuffle=True)
-    val_sampler   = DistributedSampler(val_dataset,   shuffle=False)
+    is_wandb = args["wandb"]
+    use_depth = args["use_depth"]
+    use_masks = args["use_masks"]
+    ckpt_dir = args["ckpt_dir"]
+    policy_class = args["policy_class"]
+    onscreen_render = args["onscreen_render"]
+    task_name = args["task_name"]
+    batch_size_train = args["batch_size"]
+    batch_size_val = args["batch_size"]
+    num_steps = args["num_steps"]
+    eval_every = args["eval_every"]
+    validate_every = args["validate_every"]
+    save_every = args["save_every"]
+    resume_ckpt_path = args["resume_ckpt_path"]
+
+    # get task parameters
+    is_sim = task_name[:4] == "sim_"
+    if is_sim or task_name == "all":
+        from robot.constants import SIM_TASK_CONFIGS
+
+        task_config = SIM_TASK_CONFIGS[task_name]
+    else:
+        from robot.constants import TASK_CONFIGS
+
+        task_config = TASK_CONFIGS[task_name]
+    dataset_dir = task_config["dataset_dir"]
+    # num_episodes = task_config['num_episodes']
+    episode_len = task_config["episode_len"]
+    camera_names = task_config["camera_names"]
+    stats_dir = task_config.get("stats_dir", None)
+    sample_weights = task_config.get("sample_weights", None)
+    train_ratio = task_config.get("train_ratio", 0.99)
+    name_filter = task_config.get("name_filter", lambda n: True)
+
+    # fixed parameters
+    state_dim = 29
+    action_dim = 20
+    lr_backbone = args["lr"]
+    backbone = "resnet34"
+    # backbone = "vit_b_16"
+    # backbone = None
+    if policy_class == "ACT":
+        enc_layers = 4
+        dec_layers = 7
+        nheads = 8
+        policy_config = {
+            "lr": args["lr"],
+            "num_queries": args["chunk_size"],
+            "num_robot_observations": args["robot_obs_size"],
+            "num_image_observations": args["img_obs_size"],
+            "image_observation_skip": args["img_obs_every"],
+            "kl_weight": args["kl_weight"],
+            "hidden_dim": args["hidden_dim"],
+            "dim_feedforward": args["dim_feedforward"],
+            "lr_backbone": lr_backbone,
+            "backbone": backbone,
+            "enc_layers": enc_layers,
+            "dec_layers": dec_layers,
+            "nheads": nheads,
+            "camera_names": camera_names,
+            "vq": args["use_vq"],
+            "vq_class": args["vq_class"],
+            "vq_dim": args["vq_dim"],
+            "action_dim": action_dim,
+            "state_dim": state_dim,
+            "no_encoder": args["no_encoder"],
+            "use_depth": use_depth,
+            "use_masks" : use_masks
+        }
+    else:
+        raise NotImplementedError(f"policy class {policy_class} is not defined")
+
+    actuator_config = {
+        "actuator_network_dir": args["actuator_network_dir"],
+        "history_len": args["history_len"],
+        "future_len": args["future_len"],
+        "prediction_len": args["prediction_len"],
+    }
+
+    config = {
+        "num_steps": num_steps,
+        "eval_every": eval_every,
+        "validate_every": validate_every,
+        "save_every": save_every,
+        "ckpt_dir": ckpt_dir,
+        "resume_ckpt_path": resume_ckpt_path,
+        "episode_len": episode_len,
+        "state_dim": state_dim,
+        "lr": args["lr"],
+        "policy_class": policy_class,
+        "onscreen_render": onscreen_render,
+        "policy_config": policy_config,
+        "task_name": task_name,
+        "seed": args["seed"],
+        "temporal_agg": args["temporal_agg"],
+        "camera_names": camera_names,
+        "real_robot": not is_sim,
+        "load_pretrain": args["load_pretrain"],
+        "actuator_config": actuator_config,
+        "is_wandb": is_wandb,
+        "use_masks": use_masks,
+        "batch_size": batch_size_train,
+    }
+
+    if rank ==0:
+        if not os.path.isdir(ckpt_dir):
+            os.makedirs(ckpt_dir)
+        config_path = os.path.join(ckpt_dir, "config.pkl")
+
+    if is_wandb and rank ==0:
+        expr_name = ckpt_dir.split("/")[-1]
+        wandb.init(
+            project="SAMIL-multigpu",
+            reinit=True,
+            entity="donggunkim-kyung-hee-university",
+            name=expr_name,
+        )
+        wandb.config.update(config)
+        with open(config_path, "wb") as f:
+            pickle.dump(config, f)
+
+    train_dataset, val_dataset, stats, _ = load_data(
+        dataset_dir,
+        name_filter,
+        camera_names,
+        batch_size_train,
+        batch_size_val,
+        args["chunk_size"],
+        args["robot_obs_size"],
+        args["img_obs_size"],
+        args["img_obs_every"],
+        args["skip_mirrored_data"],
+        config["load_pretrain"],
+        policy_class,
+        stats_dir_l=stats_dir,
+        sample_weights=sample_weights,
+        train_ratio=train_ratio,
+        use_depth=use_depth,
+    )
+
+    # GPUtil.showUtilization()
+    # save dataset stats
+    if rank ==0:
+        stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
+        with open(stats_path, "wb") as f:
+            pickle.dump(stats, f)
+
+    train_sampler = DistributedSampler(train_dataset, num_replicas = world_size, rank=rank, shuffle=True)
 
     # 4) REBUILD DataLoaders with those samplers
     train_loader = DataLoader(train_dataset,
@@ -328,13 +300,7 @@ def train_bc(rank, world_size, seed, train_dataset, val_dataset, config):
                               num_workers=8,
                               pin_memory=True,
                               drop_last=True)
-    val_loader   = DataLoader(val_dataset,
-                              batch_size=config["batch_size"],
-                              sampler=val_sampler,
-                              num_workers=8,
-                              pin_memory=True,
-                              drop_last=False)
-
+    
     num_steps = config["num_steps"]
     ckpt_dir = config["ckpt_dir"]
     seed = config["seed"]
@@ -343,34 +309,30 @@ def train_bc(rank, world_size, seed, train_dataset, val_dataset, config):
     eval_every = config["eval_every"]
     validate_every = config["validate_every"]
     save_every = config["save_every"]
-    is_wandb = config["wandb"] and (rank == 0)
+    is_wandb = config["is_wandb"] and (rank == 0)
     use_masks = config["use_masks"]
 
-    validation_iteration = 50
-    train_iteration = 5e2
-    
     policy = make_policy(policy_class, policy_config)
     optimizer = make_optimizer(policy_class, policy)
-    policy.cuda(rank)
-    policy = DDP(policy, device_ids=[rank], find_unused_parameters=True)
+    policy.to(local_rank)
+    policy = DDP(policy, device_ids=[local_rank], output_device = local_rank, find_unused_parameters=True)
 
     if config["resume_ckpt_path"] is not None:
-        ckpt = torch.load(config["resume_ckpt_path"], map_location= lambda storage, loc : storage.cuda(rank))
+        ckpt = torch.load(config["resume_ckpt_path"], map_location=torch.cuda.device(local_rank))
         optimizer.load_state_dict(ckpt['optim_state'])
-        loading_status = policy.model.deserialize(ckpt['model_state'])
+        loading_status = policy.module.deserialize(ckpt['model_state'])
         print(
             f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}'
         )
 
-    min_val_loss = np.inf
-    best_ckpt_info = None
-
     train_dataloader = repeater(train_loader)
     current_epoch = 0
+    train_sampler.set_epoch(current_epoch)
 
     for step in tqdm(range(num_steps), dynamic_ncols=True):
         policy.train()
         data = next(train_dataloader)
+
         if use_masks:
             forward_dict = forward_pass_with_masks(data, policy)
         else:
@@ -381,11 +343,11 @@ def train_bc(rank, world_size, seed, train_dataset, val_dataset, config):
         loss.backward()
         optimizer.step()
 
-        if step % len(train_loader) == 0:
+        if (step+1) % len(train_loader) == 0:
             current_epoch +=1
             train_sampler.set_epoch(current_epoch)
 
-        if is_wandb:
+        if is_wandb and rank ==0:
             wandb.log(forward_dict, step=step)  # not great, make training 1-2% slower
 
         if step % save_every == 0 and rank ==0:
@@ -395,8 +357,10 @@ def train_bc(rank, world_size, seed, train_dataset, val_dataset, config):
                 'optim_state' : optimizer.state_dict(),
             }, ckpt_path)
 
-    dist.destroy_process_group()
-    return best_ckpt_info
+    if is_wandb and rank ==0:
+        wandb.finish()
+    torch.cuda.empty_cache()
+    cleanup()
 
 
 def repeater(data_loader):
@@ -409,6 +373,7 @@ def repeater(data_loader):
 
 
 if __name__ == "__main__":
+    mp.set_start_method('spawn', force=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("--onscreen_render", action="store_true")
     parser.add_argument("--wandb", action="store_true")
