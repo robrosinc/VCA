@@ -76,6 +76,21 @@ def send_array_recv_mask(array: np.ndarray, meta: dict = {}):
 # Shared global used by Flask to stream
 latest_mask_bytes = None
 
+current_pose_l = None
+current_pose_r = None
+
+pose_lock = threading.Lock()
+
+def current_pose_callback_l(msg):
+    global current_pose_l
+    with pose_lock:
+        current_pose_l = np.array(msg.data)
+
+def current_pose_callback_r(msg):
+    global current_pose_r
+    with pose_lock:
+        current_pose_r = np.array(msg.data)
+
 def main(args):
     global init_masks, predictor_ready
 
@@ -84,10 +99,16 @@ def main(args):
     max_timesteps = task_config['episode_len']
     camera_names = task_config['camera_names']
     robot_id_list = task_config['robot_id_list']
-
+    
+    rospy.init_node('dsr_mask_control_py')
     image_recorder = ImageRecorder(camera_names = task_config['camera_names'], init_node=False)
-    dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False, thru_cpp=True)
+    # dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False, thru_cpp=True)
     gripper = gripperControl(robot_id_list = robot_id_list, hz = HZ, init_node=False, teleop=False)
+    
+    pose_state_sub_l = rospy.Subscriber('/dsr_l/state/pose_to_python', Float32MultiArray, current_pose_callback_l)
+    pose_action_pub_l = rospy.Publisher('/dsr_l/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=10)
+    pose_state_sub_r = rospy.Subscriber('/dsr_r/state/pose_to_python', Float32MultiArray, current_pose_callback_r)
+    pose_action_pub_r = rospy.Publisher('/dsr_r/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=10)
 
     # Parameters
     temporal_ensemble = True
@@ -102,7 +123,7 @@ def main(args):
     use_rotm6d = True
     img_downsampling = True
     img_downsampling_size = (640, 240) #(640, 180) or (640, 240)
-    use_inter_gripper_proprio_input = True
+    use_inter_gripper_proprio_input = False
     use_gpu_for_inference = True
     
     inference_batch = 1
@@ -120,24 +141,12 @@ def main(args):
 
     rate = rospy.Rate(HZ)
     # rate = rospy.Rate(15)
-        
-    left_action_pose_publisher = rospy.Publisher('/dsr_l/ACT/pose_trajectory', PoseArray, queue_size=1)
-    right_action_pose_publisher = rospy.Publisher('/dsr_r/ACT/pose_trajectory', PoseArray, queue_size=1)
-    
-    left_action_gripper_publisher = rospy.Publisher('/dsr_l/ACT/gripper_trajectory', Float32MultiArray, queue_size=1)
-    right_action_gripper_publisher = rospy.Publisher('/dsr_r/ACT/gripper_trajectory', Float32MultiArray, queue_size=1)
-    
-    left_action_traj_msg = PoseArray()
-    right_action_traj_msg = PoseArray()
-    
-    left_gripper_traj_msg = Float32MultiArray()
-    right_gripper_traj_msg = Float32MultiArray()
     
     # load model parameters
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_18000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_6000_seed_0.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -242,10 +251,17 @@ def main(args):
 
     #ready gripper thread
     gripper.control_thread_start()
-    dsr.control_thread_start()
+    # dsr.control_thread_start()
+    dsr_state_xpos = np.zeros(0)
+    with pose_lock:
+        dsr_state_xpos = np.concatenate( (dsr_state_xpos, current_pose_l[:3], current_pose_r[:3]) )
+    
+    dsr_state_euler= np.zeros(0)
+    with pose_lock:
+        dsr_state_euler = np.concatenate( (dsr_state_euler, current_pose_l[3:], current_pose_r[3:]) )
 
-    dsr_state_xpos = dsr.get_xpos()
-    dsr_state_euler = dsr.get_euler()
+    # dsr_state_xpos = dsr.get_xpos()
+    # dsr_state_euler = dsr.get_euler()
     gripper_state = gripper.get_state()
 
     if use_rotm6d is True:
@@ -333,10 +349,16 @@ def main(args):
     time0 = time.time()
     for t in tqdm(range(max_timesteps)):
         t0 = time.time() #
-        dsr_state_xpos = dsr.get_xpos()
-        dsr_state_euler = dsr.get_euler()
+        # dsr_state_xpos = dsr.get_xpos()
+        # dsr_state_euler = dsr.get_euler()
+        
         gripper_state = gripper.get_state()
         
+        dsr_state_xpos = np.zeros(0)
+        dsr_state_xpos = np.concatenate( (dsr_state_xpos, current_pose_l[:3], current_pose_r[:3]) )
+        
+        dsr_state_euler= np.zeros(0)
+        dsr_state_euler = np.concatenate( (dsr_state_euler, current_pose_l[3:], current_pose_r[3:]) )
         dsr_state_rotm6d = np.zeros(0)
         for r in range(num_robots):
             dsr_state_rotation = Rotation.from_euler("ZYZ", dsr_state_euler[3*r:3*r+3], degrees=True)
@@ -559,7 +581,7 @@ def main(args):
                 # print('all_action: ', all_actions)
             
 
-                print('action: ', action)
+                # print('action: ', action)
                 # print('robot_state: ', robot_state)
                 # for i in range(10):
                 #     t1 = time.time()
@@ -597,12 +619,47 @@ def main(args):
         desired_gripper_pose = action[-num_robots:]
 
         # print('desired_gripper_pose: ', desired_gripper_pose)
-        # print('dsr_desired_pose: ', dsr_desired_pose)
+        print('dsr_desired_pose: ', dsr_desired_pose)
         # print('dsr_state_xpos: ', dsr_state_xpos)
         # print('dsr_state_euler: ', dsr_state_euler)
         
         ###### COMMAND ROBOT (IMPORTANT) ######
-        dsr.set_action(dsr_desired_pose)
+        pose_msg_l = PoseStamped()
+        pose_msg_r = PoseStamped()
+        pose_msg_l.header.stamp = rospy.Time.now()
+        pose_msg_r.header.stamp = rospy.Time.now()
+        pose_msg_l.header.frame_id = "base_link"
+        pose_msg_r.header.frame_id = "base_link"
+
+        # Left arm
+        pos_l = dsr_desired_pose[0:3]
+        action_rotation = Rotation.from_euler("ZYZ", dsr_desired_pose[3:6], degrees=True)
+        quat_l = action_rotation.as_quat()
+        
+        pose_msg_l.pose.position.x = pos_l[0]
+        pose_msg_l.pose.position.y = pos_l[1]
+        pose_msg_l.pose.position.z = pos_l[2]
+        pose_msg_l.pose.orientation.x = quat_l[0]
+        pose_msg_l.pose.orientation.y = quat_l[1]
+        pose_msg_l.pose.orientation.z = quat_l[2]
+        pose_msg_l.pose.orientation.w = quat_l[3]
+
+        # Right arm
+        pos_r = dsr_desired_pose[6:9]
+        action_rotation = Rotation.from_euler("ZYZ", dsr_desired_pose[9:12], degrees=True)
+        quat_r = action_rotation.as_quat()
+
+        pose_msg_r.pose.position.x = pos_r[0]
+        pose_msg_r.pose.position.y = pos_r[1]
+        pose_msg_r.pose.position.z = pos_r[2]
+        pose_msg_r.pose.orientation.x = quat_r[0]
+        pose_msg_r.pose.orientation.y = quat_r[1]
+        pose_msg_r.pose.orientation.z = quat_r[2]
+        pose_msg_r.pose.orientation.w = quat_r[3]
+        pose_action_pub_l.publish(pose_msg_l)
+        pose_action_pub_r.publish(pose_msg_r)
+        
+        gripper.set_action(desired_gripper_pose)
         gripper.set_action(desired_gripper_pose)
         #########################################
         
@@ -618,7 +675,7 @@ def main(args):
         
     
     # stop dsr
-    dsr.stop()
+    # dsr.stop()
     # open gripper
     gripper.open()
     time.sleep(0.1)
@@ -626,7 +683,7 @@ def main(args):
     # shutdown controllers
     # dsr.shutdown()
     # gripper.shutdown()
-    print(f'Avg Control Frequency [Hz]: {dsr.dsr_list[0].tick / (time.time() - time0)}')
+    # print(f'Avg Control Frequency [Hz]: {dsr.dsr_list[0].tick / (time.time() - time0)}')
     
     
 

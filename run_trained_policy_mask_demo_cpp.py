@@ -3,7 +3,7 @@
 # ##
 # @brief    [record_episode] 
 # @author   Daegyu Lim (dglim@robros.co.kr)   
-import zmq
+
 import rospy
 import os
 import time
@@ -15,7 +15,6 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import h5py
 import pickle
-import json
 import argparse
 from robot.constants import *
 import cv2
@@ -39,9 +38,18 @@ except:
     ROBOT_ID     = "dsr_l"
 ROBOT_MODEL = "a0509"
 
-context = zmq.Context()
-socket = context.socket(zmq.REQ)
-socket.connect("tcp://localhost:1113")
+app = Flask(__name__)
+
+tam_checkpoint = "external/tamapp/checkpoints/efficienttam_ti_512x512.pt"
+model_cfg = "configs/efficienttam/efficienttam_ti_512x512.yaml"
+
+classes = [0, 1, 2, 3]  # Adjust number of classes
+
+click_points = {cls: [] for cls in classes}  # Store clicked points for all classes
+current_class = 0
+reset = False
+reset_class = 0
+current_frame_idx = 0
 
 predictor_ready= False
 init_masks=[]
@@ -49,35 +57,97 @@ init_masks=[]
 no_obj_points = np.array([[0, 0]], dtype=np.float32)
 no_obj_labels = np.array([-1], dtype=np.int32)
 
-# def send_predictor_command(command, payload):
-#     socket.send_pyobj({"command": command, "payload": payload})
-#     return socket.recv_pyobj()
-
-def send_image(image: np.ndarray):
-    success, encoded_img = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-    if not success:
-        raise RuntimeError("이미지 인코딩 실패")
-    socket.send_multipart(encoded_img.tobytes())
-
-def send_array_recv_mask(array: np.ndarray, meta: dict = {}):
-    # 메타정보: shape, dtype + 추가 사용자 정의
-    meta.update({'dtype': str(array.dtype), 'shape': array.shape})
-    socket.send_multipart([
-        json.dumps(meta).encode('utf-8'),  # 헤더: JSON 문자열
-        array.tobytes()                    # 본문: 실제 데이터
-    ])
-    meta_bytes, data_bytes = socket.recv_multipart()
-    meta = json.loads(meta_bytes.decode('utf-8'))
-    dtype = np.dtype(meta['dtype'])
-    shape = tuple(meta['shape'])
-    array = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
-    return array
-
 # Shared global used by Flask to stream
 latest_mask_bytes = None
 
+def process_mask_frame(frame, predictor, click_points, classes, current_class, reset_flags):
+    global latest_mask_bytes
+
+    # Run tracker
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        _, out_mask_logits = predictor.track(frame)
+
+    # Collect prompts
+    new_input = False
+    first_hit = True
+    Gathered_matrix = {cls: {'points': [], 'labels': [], 'first_hit': []} for cls in classes}
+    for cls in classes:
+        if click_points[cls]:
+            new_input = True
+            for point in click_points[cls]:
+                Gathered_matrix[cls]['points'].append(point)
+                Gathered_matrix[cls]['labels'].append(1)
+                Gathered_matrix[cls]['first_hit'].append(first_hit)
+                first_hit = False
+            click_points[cls] = []
+
+    if new_input or reset_flags["reset"]:
+        for cls in classes:
+            if Gathered_matrix[cls]['points']:
+                points = np.array(Gathered_matrix[cls]['points'], dtype=np.float32)
+                labels = np.array(Gathered_matrix[cls]['labels'], dtype=np.int32)
+                first_hit = np.array(Gathered_matrix[cls]['first_hit'], dtype=np.bool_)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    predictor.add_new_points_during_track(cls, points, labels, first_hit=first_hit[0], frame=frame)
+        if reset_flags["reset"]:
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                predictor.add_new_points(
+                    frame_idx=reset_flags["current_frame_idx"],
+                    obj_id=reset_flags["reset_class"],
+                    points=no_obj_points,
+                    labels=no_obj_labels,
+                    new_input=True
+                )
+            reset_flags["reset"] = False
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _, _, out_mask_logits = predictor.finalize_new_input()
+
+    # Convert and visualize
+    mask_logits = out_mask_logits.cpu().numpy()
+    frame_with_mask = apply_mask_to_frame(frame, mask_logits[0:4])
+
+    # Show UI elements
+    cv2.putText(frame_with_mask, f"Selected Class: {current_class}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    for i, cls in enumerate(classes):
+        color = (0, 255, 0) if cls == current_class else (200, 200, 200)
+        cv2.putText(frame_with_mask, f"Class {cls}", (10, 60 + i * 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    # Update latest_mask_bytes for Flask streaming
+    ret, buffer = cv2.imencode('.jpg', frame_with_mask)
+    if ret:
+        latest_mask_bytes = buffer.tobytes()
+
+    # Generate binary mask if needed for inference
+    binary_mask = (mask_logits[0] > 0).astype(np.uint8) * 255
+    for i in range(1, len(classes)):
+        binary_mask = cv2.bitwise_or(binary_mask, (mask_logits[i] > 0).astype(np.uint8) * 255)
+
+    return binary_mask, frame_with_mask
+
+current_pose_l = None
+current_pose_r = None
+
+def current_pose_callback_l(msg):
+    global current_pose_l
+    current_pose_l = msg
+
+def current_pose_callback_r(msg):
+    global current_pose_r
+    current_pose_r = msg
+
+
 def main(args):
     global init_masks, predictor_ready
+    print("inside main")
+    predictor = build_efficienttam_camera_predictor(model_cfg, tam_checkpoint)
+    # Start Flask in a separate thread so main() can continue
+    
+    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False))
+    flask_thread.daemon = True  # ensures it exits when main thread exits
+    flask_thread.start()
 
     task_config = TASK_CONFIGS[args['task_name']]
     dataset_dir = task_config['dataset_dir']
@@ -86,8 +156,14 @@ def main(args):
     robot_id_list = task_config['robot_id_list']
 
     image_recorder = ImageRecorder(camera_names = task_config['camera_names'], init_node=False)
-    dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False)
+    # dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False)
     gripper = gripperControl(robot_id_list = robot_id_list, hz = HZ, init_node=False, teleop=False)
+    rospy.init_node('dsr_mask_control_py')
+    pose_state_sub_l = rospy.Subscriber('/dsr_l/state/pose_to_python', Float32MultiArray, current_pose_callback_l)
+    pose_action_pub_l = rospy.Publisher('/dsr_l/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=10)
+    pose_state_sub_r = rospy.Subscriber('/dsr_r/state/pose_to_python', Float32MultiArray, current_pose_callback_r)
+    pose_action_pub_r = rospy.Publisher('/dsr_r/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=10)
+
 
     # Parameters
     temporal_ensemble = True
@@ -120,18 +196,6 @@ def main(args):
 
     rate = rospy.Rate(HZ)
     # rate = rospy.Rate(15)
-        
-    left_action_pose_publisher = rospy.Publisher('/dsr_l/ACT/pose_trajectory', PoseArray, queue_size=1)
-    right_action_pose_publisher = rospy.Publisher('/dsr_r/ACT/pose_trajectory', PoseArray, queue_size=1)
-    
-    left_action_gripper_publisher = rospy.Publisher('/dsr_l/ACT/gripper_trajectory', Float32MultiArray, queue_size=1)
-    right_action_gripper_publisher = rospy.Publisher('/dsr_r/ACT/gripper_trajectory', Float32MultiArray, queue_size=1)
-    
-    left_action_traj_msg = PoseArray()
-    right_action_traj_msg = PoseArray()
-    
-    left_gripper_traj_msg = Float32MultiArray()
-    right_gripper_traj_msg = Float32MultiArray()
     
     # load model parameters
     ckpt_dir = args['ckpt_dir']
@@ -232,6 +296,8 @@ def main(args):
             images = image_recorder.get_images()
 
         images_size[cam_name] = images[cam_name].shape # h w c
+        if cam_name == 'head_camera':
+            print("size:", images_size[cam_name])
 
     print('Are you ready?')
     for cnt in range(3):
@@ -242,10 +308,17 @@ def main(args):
 
     #ready gripper thread
     gripper.control_thread_start()
-    dsr.control_thread_start()
-
-    dsr_state_xpos = dsr.get_xpos()
-    dsr_state_euler = dsr.get_euler()
+    
+    # dsr.control_thread_start()
+    dsr_state_xpos = np.zeros(0)
+    dsr_state_xpos = np.concatenate( (dsr_state_xpos, current_pose_l[:3], current_pose_r[:3]) )
+    
+    dsr_state_euler= np.zeros(0)
+    dsr_state_euler = np.concatenate( (dsr_state_euler, current_pose_l[3:], current_pose_r[3:]) )
+    
+    # dsr_state_xpos = dsr.get_xpos()
+    # dsr_state_euler = dsr.get_euler()
+    
     gripper_state = gripper.get_state()
 
     if use_rotm6d is True:
@@ -301,15 +374,21 @@ def main(args):
         # cv2.imshow('first_image', first_image_for_show)
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
-            first_image = first_image[140:-100, :].copy() # crop height
+            first_image = first_image[:,:640].copy() # crop height
             if use_masks:
                 first_input = first_image[:,:640].copy()
-                binary_mask = send_array_recv_mask(first_input)
-                first_mask = (binary_mask > 0).astype(np.float32) * 255
-                # print("first_mask", first_mask.shape)
-                mask_obs_history[cam_name] = np.repeat(first_mask[np.newaxis, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
-                mask_obs_history['head_camera'][0] = first_mask
-                # print("next value", mask_obs_history["head_camera"].shape)
+
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    binary_mask = predictor.load_first_frame(first_input, 4)
+                init_masks.append(out_mask_logits)
+                if len(init_masks) ==4:
+                    predictor_ready = True
+                    print("INIT DONEEEEEEE")
+                    first_mask = out_mask_logits[0].cpu().numpy()
+                    first_mask = (first_mask > 0).astype(np.float32) * 255
+                    print('first mask', first_mask.shape)
+                    mask_obs_history[cam_name] = np.repeat(first_mask[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
+                    mask_obs_history['head_camera'][0] = (first_mask > 0).astype(np.float32) * 255
         if img_downsampling:
             first_image = cv2.resize(first_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
         first_image = rearrange(first_image, 'h w c -> c h w')
@@ -319,6 +398,9 @@ def main(args):
             first_depth = np.array([image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name]])
             depth_obs_history[cam_name] = np.repeat(first_depth[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0) #0xxx0xxx0
     
+    while not predictor_ready:
+        time.sleep(0.1)
+    
     if record_snapshot:
         head_img = image_recorder.get_images()['head_camera']     
         head_img = head_img[:, :, [2, 1, 0]] # swap B and R channel
@@ -327,12 +409,24 @@ def main(args):
         # cv2.waitKey(0)
         
     print('Start!')
+    rospy.spinOnce()
 
     time0 = time.time()
     for t in tqdm(range(max_timesteps)):
+        global current_frame_idx, reset
+        current_frame_idx += 1
+        new_input, first_hit = False, True
+        head_cam_masks = None
+
         t0 = time.time() #
-        dsr_state_xpos = dsr.get_xpos()
-        dsr_state_euler = dsr.get_euler()
+        # dsr_state_xpos = dsr.get_xpos()
+        # dsr_state_euler = dsr.get_euler()
+        
+        dsr_state_xpos = np.zeros(0)
+        dsr_state_xpos = np.concatenate( (dsr_state_xpos, current_pose_l[:3], current_pose_r[:3]) )
+        
+        dsr_state_euler= np.zeros(0)
+        dsr_state_euler = np.concatenate( (dsr_state_euler, current_pose_l[3:], current_pose_r[3:]) )
         gripper_state = gripper.get_state()
         
         dsr_state_rotm6d = np.zeros(0)
@@ -420,11 +514,14 @@ def main(args):
                         current_image = current_image[140:-100, :].copy() # crop height
                         if use_masks:
                             current_input = current_image[:,:640].copy()
-                            binary_mask = send_array_recv_mask(current_input)
+                            binary_mask, _ = process_mask_frame(
+                                current_input, predictor, click_points, classes, current_class,
+                                reset_flags={"reset": reset, "reset_class": reset_class, "current_frame_idx": current_frame_idx}
+                            )
 
                             # current_mask = np.expand_dims(binary_mask, axis=0) # channel dim
 
-                            # print("head_cam_mask", binary_mask.shape)
+                            print("head_cam_mask", binary_mask.shape)
                             if num_image_obs >1:
                                 mask_obs_history[cam_name][1:] =  mask_obs_history[cam_name][:-1]
                                 mask_obs_history[cam_name][0] = binary_mask
@@ -442,14 +539,14 @@ def main(args):
                     else:
                         image_obs_history[cam_name][0] = current_image
                     
-                # print('image obs', image_obs_history['head_camera'].shape)
+                print('image obs', image_obs_history['head_camera'].shape)
                 all_cam_images = []
                 for cam_name in camera_names:
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
-                # print("all cam", all_cam_images.shape)
-                # print('mask_obs_histroy', mask_obs_history['head_camera'].shape)
+                print("all cam", all_cam_images.shape)
+                print('mask_obs_histroy', mask_obs_history['head_camera'].shape)
                 if use_masks:
                     all_cam_masks = []
                     for cam_name in camera_names:
@@ -474,7 +571,7 @@ def main(args):
                     cam_images = torch.from_numpy(all_cam_images / 255.0).float().cpu().unsqueeze(0)
                     if use_masks:
                         cam_masks = torch.from_numpy(all_cam_masks).float().cpu().unsqueeze(0)
-                # print("image", cam_images.shape, "masks", cam_masks.shape)
+                print("image", cam_images.shape, "masks", cam_masks.shape)
                 t2 = time.time()
                 # policy inference
                 all_actions = policy(robot_obs_history_torch, cam_images, cam_masks) # action dim: [1, chunk_size, action_dim]
@@ -556,17 +653,17 @@ def main(args):
                 # print('all_action: ', all_actions)
             
 
-                # print('action: ', action)
+                print('action: ', action)
                 # print('robot_state: ', robot_state)
                 # for i in range(10):
                 #     t1 = time.time()
-                #     dsr.step()
+                #     dsr.step() # not this
                 #     t2 = time.time()
                 
 
                 
         if rospy.is_shutdown():
-            # dsr.stop()
+            # dsr.stop() # not this
             break
         
         # action = all_actions[t%10][:]
@@ -594,12 +691,45 @@ def main(args):
         desired_gripper_pose = action[-num_robots:]
 
         # print('desired_gripper_pose: ', desired_gripper_pose)
-        # print('dsr_desired_pose: ', dsr_desired_pose)
+        print('dsr_desired_pose: ', dsr_desired_pose)
         # print('dsr_state_xpos: ', dsr_state_xpos)
         # print('dsr_state_euler: ', dsr_state_euler)
         
         ###### COMMAND ROBOT (IMPORTANT) ######
-        dsr.set_action(dsr_desired_pose)
+        pose_msg_l = PoseStamped()
+        pose_msg_r = PoseStamped()
+        pose_msg_l.header.stamp = rospy.Time.now()
+        pose_msg_r.header.stamp = rospy.Time.now()
+        pose_msg_l.header.frame_id = "base_link"
+        pose_msg_r.header.frame_id = "base_link"
+
+        # Left arm
+        pos_l = all_actions[0:3]
+        rot6d_l = all_actions[6:12]
+        quat_l = rot6d2quat(rot6d_l)  # (x, y, z, w)
+
+        pose_msg_l.pose.position.x = pos_l[0]
+        pose_msg_l.pose.position.y = pos_l[1]
+        pose_msg_l.pose.position.z = pos_l[2]
+        pose_msg_l.pose.orientation.x = quat_l[0]
+        pose_msg_l.pose.orientation.y = quat_l[1]
+        pose_msg_l.pose.orientation.z = quat_l[2]
+        pose_msg_l.pose.orientation.w = quat_l[3]
+
+        # Right arm
+        pos_r = all_actions[3:6]
+        rot6d_r = all_actions[12:18]
+        quat_r = rot6d2quat(rot6d_r)
+
+        pose_msg_r.pose.position.x = pos_r[0]
+        pose_msg_r.pose.position.y = pos_r[1]
+        pose_msg_r.pose.position.z = pos_r[2]
+        pose_msg_r.pose.orientation.x = quat_r[0]
+        pose_msg_r.pose.orientation.y = quat_r[1]
+        pose_msg_r.pose.orientation.z = quat_r[2]
+        pose_msg_r.pose.orientation.w = quat_r[3]
+        pose_action_pub_l.publish(pose_msg_l)
+        pose_action_pub_r.publish(pose_msg_r)
         gripper.set_action(desired_gripper_pose)
         #########################################
         
@@ -615,7 +745,7 @@ def main(args):
         
     
     # stop dsr
-    dsr.stop()
+    # dsr.stop() # this
     # open gripper
     gripper.open()
     time.sleep(0.1)
@@ -688,6 +818,83 @@ def rot6d2quat(rot6d):
         raise TypeError("Input must be a quaternion or quaternion array.") 
     return quat
 
+def apply_mask_to_frame(frame, mask_logits, colors=None):
+    if isinstance(mask_logits, torch.Tensor):
+        mask_logits = mask_logits.cpu().numpy()
+
+    if colors is None:
+        colors = [
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 0, 0),
+            (0, 255, 255)
+        ]
+    
+    mask_colored = np.zeros_like(frame, dtype=np.uint8)
+
+    for class_idx in range(mask_logits.shape[0]):
+        mask = (mask_logits[class_idx] > 0.0).astype(np.uint8) * 255
+
+        for i in range(3):
+            mask_colored[:, :, i] = np.clip(
+                mask_colored[:, :, i] + (mask * (colors[class_idx][i] / 255)).astype(np.uint8), 
+                0, 
+                255
+            )
+
+    return cv2.addWeighted(frame, 0.6, mask_colored, 0.4, 0)
+
+@app.route('/')
+def index():
+    return render_template('app_index.html')
+
+@app.route('/video_feed')
+def video_feed():
+    def stream():
+        while True:
+            if latest_mask_bytes:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + latest_mask_bytes + b'\r\n')
+            time.sleep(0.033)  # ~30 FPS
+    return Response(stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/click', methods=['POST'])
+def handle_click():
+    data = request.json
+    x = data['x']
+    y = data['y']
+    
+    global current_class
+    click_points[current_class].append([x, y])
+    print(f"Click at (x: {x}, y: {y}) for Class {current_class}")
+    return jsonify({'status': 'success', 'class': current_class,'coordinates': {'x': x, 'y': y}})
+
+
+@app.route('/reset_class', methods=['POST'])
+def reset_class():
+    data = request.json
+    class_num = data['class']
+
+    global reset, reset_class
+    if class_num in classes:
+        reset = True
+        reset_class = class_num
+    else:
+        return jsonify({'status': 'error', 'message': 'Invalid class'})
+
+    return jsonify({'status': 'success', 'reset': reset, 'reset_class': reset_class})
+
+@app.route('/change_class', methods=['POST'])
+def change_class():
+    data = request.json
+    new_class = data['class']
+    
+    global current_class
+    if new_class in classes:
+        current_class = new_class
+        return jsonify({'status': 'success', 'current_class': current_class})
+    else:
+        return jsonify({'status': 'error', 'message': 'Invalid class'})
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

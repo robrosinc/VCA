@@ -145,7 +145,7 @@ def main(args):
     robot_id_list = task_config['robot_id_list']
 
     image_recorder = ImageRecorder(camera_names = task_config['camera_names'], init_node=False)
-    dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False)
+    dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False, thru_cpp=True)
     gripper = gripperControl(robot_id_list = robot_id_list, hz = HZ, init_node=False, teleop=False)
 
     # Parameters
@@ -196,7 +196,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_4400_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_34000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -684,7 +684,7 @@ def main(args):
         
         ###### COMMAND ROBOT (IMPORTANT) ######
         # dsr.set_action(dsr_desired_pose)
-        # gripper.set_action(desired_gripper_pose)
+        gripper.set_action(desired_gripper_pose)
         #########################################
         
         # dsr.step() # for ROS topic publish
