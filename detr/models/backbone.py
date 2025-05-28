@@ -177,23 +177,20 @@ class BasicBlock(nn.Module):
 
 
 class Resnet10(nn.Module):
-    def __init__(self, num_classes=1000):
+    def __init__(self):
         super().__init__()
         self.in_channels = 64
         self.out_channels = 512
         
-        # Conv1: Starts with stride 2 and padding 3
+        # Conv1: Starts with stride 2
         self.conv1 = nn.Conv2d(1, self.in_channels, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.in_channels)
         
-        # Adjust strides to ensure correct downsampling
-        self.layer1 = self._make_layer(64, 2, stride=1)   # Keep stride=1
-        self.layer2 = self._make_layer(128, 2, stride=2)  # Downsample
-        self.layer3 = self._make_layer(256, 2, stride=2)  # Downsample again
-        self.layer4 = self._make_layer(512, 2, stride=1)  # Keep stride=1
-
-        # Add Adaptive Pooling to force output to (8, 20)
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((8, 20))
+        # Apply stride=2 progressively to reach 8x20 from 240x640
+        self.layer1 = self._make_layer(64, 2, stride=2)   # 120 → 60
+        self.layer2 = self._make_layer(128, 2, stride=2)  # 60 → 30
+        self.layer3 = self._make_layer(256, 2, stride=2)  # 30 → 15
+        self.layer4 = self._make_layer(512, 2, stride=2)  # 15 → 8 (rounded down)
 
     def _make_layer(self, out_channels, blocks, stride):
         layers = [BasicBlock(self.in_channels, out_channels, stride)]
@@ -203,14 +200,11 @@ class Resnet10(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        
-        # Fix the shape issue
-        out = self.adaptive_pool(out)
+        out = F.relu(self.bn1(self.conv1(x)))   # (1, 64, 120, 320)
+        out = self.layer1(out)                  # (1, 64, 60, 160)
+        out = self.layer2(out)                  # (1, 128, 30, 80)
+        out = self.layer3(out)                  # (1, 256, 15, 40)
+        out = self.layer4(out)                  # (1, 512, 8, 20)
         return {"layer4": out}
 
 
@@ -218,7 +212,7 @@ def build_mask_backbone(args):
     position_embedding = build_position_encoding(args)
     train_backbone = args.lr_backbone > 0
     
-    backbone = Resnet10(train_backbone)
+    backbone = Resnet10()
 
     model = Joiner(backbone, position_embedding)
     model.num_channels = backbone.out_channels

@@ -184,20 +184,23 @@ class DETRVAE(nn.Module):
             if self.mask_backbones is not None:
                 for i in range(len(self.mask_backbones)):
                     for t in range(self.num_image_observations):
+                        # print("1", masks.shape) # 1 1 2 1 240 640
+                        # print("2", masks[:,i,t].shape) # 1 1 240 640
                         features, pos = self.mask_backbones[i](masks[:, i, t])
                         features = features[0] # take the last layer feature
+                        # print("3", features.shape) # 1 512 8 20
                         pos = pos[0]
                         all_cam_features.append(self.input_proj_masks(features))
                         all_cam_pos.append(pos)
                         del features, pos
 
-                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos.reshape(bs, -1))
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            # print(src.shape) # 8 512 8 160  for each camera 40
+            # print(src.shape) # B 512 8 160  for each camera 40 if obs_img is 2, 20 if 1 
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
