@@ -5,6 +5,7 @@ import h5py
 import pickle
 import fnmatch
 import cv2
+import zlib
 from time import time
 from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
 import torchvision.transforms as transforms
@@ -61,7 +62,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
         self.relative_action_mode = False
         self.relative_obs_mode = False
-        self.relative_inter_gripper_proprio = False
+        self.relative_inter_gripper_proprio = True
 
         self.__getitem__(0)  # initialize self.is_sim and self.transformations
         self.is_sim = False
@@ -214,9 +215,22 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         root[f"/observations/images/{cam_name}"]
                     )[img_sampling]
                     if cam_name == "head_camera":
-                        mask_dict[cam_name] = np.expand_dims(np.array(
-                            root[f"/observations/masks/{cam_name}_masks"]
-                        )[img_sampling, :, :640], axis=1)
+                        if f"{cam_name}_masks" in root["/observations/masks"]:
+                            mask_dict[cam_name] = np.expand_dims(np.array(
+                                root[f"/observations/masks/{cam_name}_masks"]
+                            )[img_sampling][:,:,:640], axis=1)
+                        elif cam_name in root["/observations/masks"]:
+                            img_sampling_np = np.array(img_sampling)
+                            unique_indices, inverse_indices = np.unique(img_sampling_np, return_inverse=True)
+                            unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
+                            decompressed_masks_unique = [
+                                np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
+                                for entry in unique_compressed
+                            ]
+                            decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                            mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+                        else:
+                            raise KeyError("No valid mask dataset found for head_camera")
                 # print("here", mask_dict['head_camera'].shape) # 2 1 240 640
                 t3 = time()
                 if compressed:
@@ -236,12 +250,12 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 all_cam_masks = []
                 for cam_name in self.camera_names:
                     if cam_name =='head_camera':
-                        cropped_mask = mask_dict[cam_name]
+                        cropped_mask = mask_dict[cam_name][:,:,:,:640]
                         for t in range(len(mask_dict[cam_name])):
                             mask_dict[cam_name][t] = cropped_mask[t]
                         all_cam_masks.append(mask_dict[cam_name])
                 all_cam_masks = np.stack(all_cam_masks, axis=0)
-                # print(all_cam_masks.shape) # 1 T 1 240 640
+                # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 240 640
                 
                 if self.use_depth:
                     depth_image_dict = dict()
@@ -359,10 +373,10 @@ class EpisodicDataset(torch.utils.data.Dataset):
             all_cam_images = []
             for cam_name in self.camera_names:
                 # crop and resize head img
-                # if cam_name == 'head_camera':
-                #     cropped_img = image_dict[cam_name][:, 140:-100, :] # crop height
-                #     for t in range(len(image_dict[cam_name])):
-                #         image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(1280, 480), interpolation=cv2.INTER_LINEAR)
+                if cam_name == 'head_camera':
+                    cropped_img = image_dict[cam_name][:, 140:-100, :] # crop height
+                    for t in range(len(image_dict[cam_name])):
+                        image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(1280, 480), interpolation=cv2.INTER_LINEAR)
 
                 all_cam_images.append(image_dict[cam_name])
 
@@ -372,7 +386,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
             all_cam_images = np.stack(all_cam_images, axis=0)
 
-            # print('all_cam_images:', all_cam_images.shape)
+            # print('all_cam_images:', all_cam_images.shape) # 3 2 480 1280 3
             # all_cam_images = all_cam_images[:, :start_ts+1]
             # image_len = start_ts+1
 
@@ -499,7 +513,7 @@ def get_norm_stats(dataset_path_list):
     all_state_data = []
     all_action_data = []
     all_episode_len = []
-    relative_inter_gripper_proprio = False
+    relative_inter_gripper_proprio = True
     relative_action_mode = False
     relative_obs_mode = False
 
