@@ -2,7 +2,7 @@ import pathlib
 import os
 
 ### Task parameters
-DATA_DIR = os.path.expanduser('/dataset/with_mask')
+DATA_DIR = os.path.expanduser('~/dataset/with_mask')
 TASK_CONFIGS = {
     ### BLOCK SORT
     'dsr_block_collect':{

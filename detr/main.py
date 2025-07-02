@@ -247,14 +247,22 @@ def build_ACT_model_and_optimizer(args_override):
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if "backbone" not in n and p.requires_grad
+                if ("mask" in n) and p.requires_grad
+            ],
+            "lr": 1e-3,
+        },
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if (("backbone" not in n) and ("mask" not in n)) and p.requires_grad
             ]
         },
         {
             "params": [
                 p
                 for n, p in model.named_parameters()
-                if "backbone" in n and p.requires_grad
+                if (("backbone" in n) and ("mask" not in n)) and p.requires_grad
             ],
             "lr": args.lr_backbone,
         },
