@@ -200,6 +200,7 @@ class Resnet10(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
+        # print(x.shape)
         out = F.relu(self.bn1(self.conv1(x)))   # (1, 64, 120, 320)
         out = self.layer1(out)                  # (1, 64, 60, 160)
         out = self.layer2(out)                  # (1, 128, 30, 80)

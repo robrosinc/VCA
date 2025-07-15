@@ -233,7 +233,6 @@ class ACTPolicy(nn.Module):
         self.optimizer = optimizer # None
         self.kl_weight = args_override["kl_weight"]
         self.vq = args_override["vq"]
-        print(f"KL Weight {self.kl_weight}")
 
     def __call__(self, robot_state, image, masks=None, actions=None, is_pad=None, vq_sample=None):
         env_state = None

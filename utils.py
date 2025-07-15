@@ -10,6 +10,7 @@ from time import time
 from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
 import torchvision.transforms as transforms
 from scipy.spatial.transform import Rotation
+import zlib
 
 import IPython
 

@@ -240,7 +240,7 @@ def train(rank, world_size, args):
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
-            project="SAMIL-149-frozen",
+            project="SAMIL-213-sratch",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,

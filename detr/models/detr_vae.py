@@ -75,7 +75,7 @@ class DETRVAE(nn.Module):
             print("backbones is None")
 
         # encoder extra parameters
-        self.latent_dim = 32 # final size of latent z # TODO tune
+        self.latent_dim = 64 # final size of latent z # TODO tune
         self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
         self.encoder_action_proj = nn.Linear(self.action_dim, hidden_dim) # project action to embedding
         self.encoder_joint_proj = nn.Linear(self.state_dim, hidden_dim)  # project qpos to embedding
@@ -315,8 +315,9 @@ def build(args):
             backbone = build_backbone(args)
             backbones.append(backbone)
 
-    mask_backbones = []
+    mask_backbones = None
     if args.use_masks:
+        mask_backbones = []
         for name in args.camera_names:
             if name == "head_camera":
                 mask_backbone = build_mask_backbone(args)

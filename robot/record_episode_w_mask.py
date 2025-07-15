@@ -21,11 +21,28 @@ import argparse
 from constants import *
 import cv2
 from tqdm import tqdm
+import zmq
+import json
+import zlib
 
 from metaquest_teleop import drlControl
 from schunk_gripper_control import gripperControl
 from robot_utils import ImageRecorder
 from dxl_master_arm import dsrMasterArm
+
+def write_nested_dataset(root, path, array):
+    keys = path.strip('/').split('/')
+    grp = root
+    for k in keys[:-1]:
+        if k not in grp:
+            grp = grp.create_group(k)
+        else:
+            grp = grp[k]
+    dset_name = keys[-1]
+    if dset_name in grp:
+        grp[dset_name][...] = array
+    else:
+        grp.create_dataset(dset_name, data=array)
 
 def set_cbreak(fd):
     # Save old terminal settings
@@ -41,9 +58,31 @@ def restore_terminal(fd, old_settings):
     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     
 # for single robot 
+context = zmq.Context()
+socket = context.socket(zmq.REQ)
+socket.connect("tcp://localhost:1113")
+predictor_ready= False
+init_masks=[]
 
+no_obj_points = np.array([[0, 0]], dtype=np.float32)
+no_obj_labels = np.array([-1], dtype=np.int32)
+
+def send_array_recv_mask(array: np.ndarray, meta: dict = {}):
+    # 메타정보: shape, dtype + 추가 사용자 정의
+    meta.update({'dtype': str(array.dtype), 'shape': array.shape})
+    socket.send_multipart([
+        json.dumps(meta).encode('utf-8'),
+        array.tobytes()
+    ])
+    meta_bytes, data_bytes = socket.recv_multipart()
+    meta = json.loads(meta_bytes.decode('utf-8'))
+    dtype = np.dtype(meta['dtype'])
+    shape = tuple(meta['shape'])
+    array = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
+    return array
 
 def main(args):
+
     task_config = TASK_CONFIGS[args['task_name']]
     dataset_dir = task_config['dataset_dir']
     max_timesteps = task_config['episode_len']
@@ -54,7 +93,7 @@ def main(args):
     image_recorder = ImageRecorder(camera_names = task_config['camera_names'], init_node=False)
     dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=True)
     gripper = gripperControl(robot_id_list = robot_id_list, hz = HZ, init_node=False, teleop=True)
-    master_arms = dsrMasterArm(robot_id_list = robot_id_list, hz=40, init_node=False)
+    master_arms = dsrMasterArm(robot_id_list = robot_id_list, hz=HZ*2, init_node=False)
 
     # master_arms.set_init_q('dsr_l', [180.0,180.0,180.0,180.0,180.0,0.0,180.0])
     # master_arms.set_joint_axis('dsr_l', [1,1,-1,1,-1,1,1])
@@ -103,10 +142,12 @@ def main(args):
     }
     for cam_name in camera_names:
         data_dict[f'/observations/images/{cam_name}'] = []
+        data_dict[f'/observations/masks/{cam_name}'] = []
         # data_dict[f'/observations/depth_images/{cam_name}'] = []
 
 
     images = dict()
+    masks = dict()
     # depth_images = dict()
     actual_dt_history = []
     
@@ -125,6 +166,10 @@ def main(args):
                 return
             time.sleep(1.0)
             images = image_recorder.get_images()
+        # if cam_name == 'head_camera':
+        #     first_image = images[cam_name][:,:640].copy()
+        #     binary_mask = send_array_recv_mask(first_image)
+        #     first_mask = (binary_mask > 0).astype(np.float32) * 255
         # while depth_images[cam_name] is None:
         #     print('waiting '+cam_name+' depth image streaming...')
         #     if rospy.is_shutdown():
@@ -136,8 +181,8 @@ def main(args):
     time.sleep(5.0)
 
     print('Are you ready? Move the robot to the desired initial pose.')
-    for cnt in range(10):
-        print(10 - cnt, 'seconds before to start DATA COLLECTION!!!')
+    for cnt in range(2):
+        print(2 - cnt, 'seconds before to start DATA COLLECTION!!!')
         time.sleep(1.0)
         if rospy.is_shutdown():
                 return
@@ -199,7 +244,19 @@ def main(args):
         data_dict['/actions/gripper_pos'].append(gripper_action)
         
         for cam_name in camera_names:
-            data_dict[f'/observations/images/{cam_name}'].append((image_recorder.get_images())[cam_name])
+            current_image = (image_recorder.get_images())[cam_name]
+            
+            data_dict[f'/observations/images/{cam_name}'].append(current_image)
+            if cam_name == 'head_camera':
+                # print('image shape',current_image.shape) # 480 1280 3
+                current_input = current_image[:,:640].copy()
+                binary_mask = send_array_recv_mask(current_input)
+                # print(binary_mask.shape, binary_mask.min(), binary_mask.max(), np.count_nonzero(binary_mask))
+                current_mask = (binary_mask > 0).astype(np.uint8) * 255
+                # print(current_mask.shape, current_mask.min(), current_mask.max(), np.count_nonzero(current_mask))
+
+                # print('mask shape', current_mask.shape, 'should be 0 640') # 1 480 640
+                data_dict[f'/observations/masks/{cam_name}'].append(current_mask.squeeze(0))
             # data_dict[f'/observations/depth_images/{cam_name}'].append((image_recorder.get_depth_images())[cam_name])
             # print(f'{cam_name} size = {image_recorder.get_images()[cam_name].shape}')
         
@@ -250,6 +307,7 @@ def main(args):
         t0 = time.time()
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50] # tried as low as 20, seems fine
         compressed_image_len = []
+        compressed_mask_len = []
         # compressed_depth_len = []
         for cam_name in camera_names:
             image_list = data_dict[f'/observations/images/{cam_name}']
@@ -271,6 +329,16 @@ def main(args):
             #     if result == False:
             #         print('Error during depth image compression')
             data_dict[f'/observations/images/{cam_name}'] = compressed_list
+            
+            if cam_name == 'head_camera':
+                mask_list = data_dict[f'/observations/masks/{cam_name}']
+                compressed_mask_list = []
+                compressed_mask_len.append([])
+                for mask in mask_list:
+                    compressed = zlib.compress(mask.tobytes())
+                    compressed_mask_list.append(compressed)
+                    compressed_mask_len[-1].append(len(compressed))
+            
             # data_dict[f'/observations/depth_images/{cam_name}'] = compressed_depth_list
         print(f'compression: {time.time() - t0:.2f}s')
 
@@ -287,6 +355,17 @@ def main(args):
                 padded_compressed_image[:image_len] = compressed_image
                 padded_compressed_image_list.append(padded_compressed_image)
             data_dict[f'/observations/images/{cam_name}'] = padded_compressed_image_list
+
+        # compressed_mask_len = np.array(compressed_mask_len)
+        # padded_mask_size = compressed_mask_len.max()
+        # compressed_mask_list = data_dict[f'/observations/masks/head_camera']
+        # padded_compressed_mask_list = []
+        # for compressed_mask in compressed_mask_list:
+        #     padded_compressed_mask = np.zeros(padded_mask_size, dtype='uint8')
+        #     mask_len = len(compressed_mask)
+        #     padded_compressed_mask[:mask_len] = compressed_mask
+        #     padded_compressed_mask_list.append(padded_compressed_mask)
+        # data_dict[f'/observations/masks/head_camera'] = padded_compressed_mask_list
 
         # compressed_depth_len = np.array(compressed_depth_len)
         # padded_size2 = compressed_depth_len.max()
@@ -311,6 +390,7 @@ def main(args):
         rewards = root.create_group('rewards')
         labels = root.create_group('labels')
         image = obs.create_group('images')
+        masks = obs.create_group('masks')
         # depth = obs.create_group('depth_images')
         
         ### observations ###
@@ -325,6 +405,14 @@ def main(args):
                                          chunks=(1, 360, 1280, 3), )
                 # _ = depth.create_dataset(cam_name, (data_timesteps, 360, 1280), dtype='uint8',
                 #                         chunks=(1, 360, 1280, 1), )
+            if cam_name == 'head_camera':
+                # _ = masks.create_dataset(cam_name, (data_timesteps, padded_mask_size), dtype = 'uint8')
+                vlen_uint8 = h5py.vlen_dtype(np.dtype('uint8'))
+                compressed_bytes_array = np.empty(len(compressed_mask_list), dtype=object)
+                for i, x in enumerate(compressed_mask_list):
+                    compressed_bytes_array[i] = np.frombuffer(x, dtype=np.uint8)
+
+                masks.create_dataset(cam_name, data=compressed_bytes_array, dtype=vlen_uint8)
         _ = obs.create_dataset('xpos', (data_timesteps, 3*num_robots))
         _ = obs.create_dataset('euler', (data_timesteps, 3*num_robots))
         _ = obs.create_dataset('gripper_pos', (data_timesteps, 1*num_robots))
@@ -338,7 +426,12 @@ def main(args):
         _ = labels.create_dataset('task_done', (data_timesteps, 1))
         
         for name, array in data_dict.items():
-            root[name][...] = array
+            # Avoid rewriting head_camera mask — already written manually above
+            if name == '/observations/masks/head_camera':
+                continue
+            write_nested_dataset(root, name, array)            
+            # root[name][...] = array
+            #write_nested_dataset(root, name, array)
 
         if COMPRESS:
             _ = root.create_dataset('compressed_image_len', (len(camera_names), data_timesteps))

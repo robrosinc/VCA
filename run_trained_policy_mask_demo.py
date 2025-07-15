@@ -145,7 +145,7 @@ def main(args):
     robot_id_list = task_config['robot_id_list']
 
     image_recorder = ImageRecorder(camera_names = task_config['camera_names'], init_node=False)
-    dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False)
+    dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=False, thru_cpp=True)
     gripper = gripperControl(robot_id_list = robot_id_list, hz = HZ, init_node=False, teleop=False)
 
     # Parameters
@@ -196,7 +196,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_17600_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_34000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -291,6 +291,8 @@ def main(args):
             images = image_recorder.get_images()
 
         images_size[cam_name] = images[cam_name].shape # h w c
+        if cam_name == 'head_camera':
+            print("size:", images_size[cam_name])
 
     print('Are you ready?')
     for cnt in range(3):
@@ -524,13 +526,20 @@ def main(args):
                     else:
                         image_obs_history[cam_name][0] = current_image
                     
-
+                print('image obs', image_obs_history['head_camera'].shape)
                 all_cam_images = []
                 for cam_name in camera_names:
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
                 print("all cam", all_cam_images.shape)
+                print('mask_obs_histroy', mask_obs_history['head_camera'].shape)
+                if use_masks:
+                    all_cam_masks = []
+                    for cam_name in camera_names:
+                        if cam_name == "head_camera":
+                            all_cam_masks.append(np.array(mask_obs_history[cam_name])[image_sampling])
+                            all_cam_masks = np.stack(all_cam_masks, axis =0)
 
                 if use_masks:
                     all_cam_masks = []
@@ -555,7 +564,6 @@ def main(args):
                     cam_images = torch.from_numpy(all_cam_images / 255.0).float().cpu().unsqueeze(0)
                     if use_masks:
                         cam_masks = torch.from_numpy(all_cam_masks).float().cpu().unsqueeze(0)
-
                 t2 = time.time()
                 # policy inference
                 all_actions = policy(robot_obs_history_torch, cam_images, cam_masks) # action dim: [1, chunk_size, action_dim]
@@ -680,7 +688,7 @@ def main(args):
         # print('dsr_state_euler: ', dsr_state_euler)
         
         ###### COMMAND ROBOT (IMPORTANT) ######
-        dsr.set_action(dsr_desired_pose)
+        # dsr.set_action(dsr_desired_pose)
         gripper.set_action(desired_gripper_pose)
         #########################################
         
