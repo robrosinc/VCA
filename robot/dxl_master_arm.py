@@ -153,7 +153,7 @@ class dsrMasterArmCore:
         self.hand_trigger_close = 0
 
         self.hand_trigger_release_pos = 15
-        self.hand_trigger_pull_pos = -33
+        self.hand_trigger_pull_pos = -24
         
     
 
@@ -625,13 +625,13 @@ class dsrMasterArm:
 
 if __name__ == "__main__":
     master_arms = dsrMasterArm(robot_id_list = ['dsr_l', 'dsr_r'], hz=40, init_node=True)
-    # master_arms = dsrMasterArm(robot_id_list = ['dsr_r'], hz=40, init_node=True)
+    # master_arms = dsrMasterArm(robot_id_list = ['dsr_l'], hz=40, init_node=True)
     master_arms.thread_start()
 
-    master_arms.set_init_q('dsr_l', [180.0,180.0,180.0,180.0,180.0,0.0,180.0])
+    master_arms.set_init_q('dsr_l', [90.0,180.0,180.0,180.0,180.0,360.0,180.0])
     master_arms.set_joint_axis('dsr_l', [1,1,-1,1,-1,1,1])
 
-    master_arms.set_init_q('dsr_r', [270.0,180.0,180.0,180.0,180.0,-180.0,180.0])
+    master_arms.set_init_q('dsr_r', [360.0,180.0,180.0,180.0,180.0,180.0,180.0])
     master_arms.set_joint_axis('dsr_r', [1,1,-1,1,-1,1,1])
 
     master_arms.run_gui()

@@ -23,6 +23,8 @@ from tqdm import tqdm
 from scipy.spatial.transform import Rotation
 from flask import Flask, render_template, Response, request, jsonify
 from external.tamapp.efficient_track_anything.build_efficienttam import build_efficienttam_camera_predictor
+import torchvision.transforms as transforms
+import torch.nn.functional as F
 
 from policy import ACTPolicy, CNNMLPPolicy, DiffusionPolicy
 import torch
@@ -106,9 +108,9 @@ def main(args):
     gripper = gripperControl(robot_id_list = robot_id_list, hz = HZ, init_node=False, teleop=False)
     
     pose_state_sub_l = rospy.Subscriber('/dsr_l/state/pose_to_python', Float32MultiArray, current_pose_callback_l)
-    pose_action_pub_l = rospy.Publisher('/dsr_l/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=10)
+    pose_action_pub_l = rospy.Publisher('/dsr_l/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=1, latch=False)
     pose_state_sub_r = rospy.Subscriber('/dsr_r/state/pose_to_python', Float32MultiArray, current_pose_callback_r)
-    pose_action_pub_r = rospy.Publisher('/dsr_r/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=10)
+    pose_action_pub_r = rospy.Publisher('/dsr_r/action/pose_from_python', PoseStamped, tcp_nodelay=True, queue_size=1, latch=False)
 
     # Parameters
     temporal_ensemble = True
@@ -122,15 +124,15 @@ def main(args):
     trained_on_gpu_server = False # True if use ckpt in gpu_server folder
     use_rotm6d = True
     img_downsampling = True
-    img_downsampling_size = (640, 240) #(640, 180) or (640, 240)
-    use_inter_gripper_proprio_input = False
+    img_downsampling_size = (240, 640) #(640, 180) or (640, 240)
+    use_inter_gripper_proprio_input = True
     use_gpu_for_inference = True
     
     inference_batch = 1
 
     ### Experiment Parameters
-    dsr_pose_action_skip = 0
-    gripper_action_skip = 0
+    dsr_pose_action_skip = 11
+    gripper_action_skip = 11
     record_snapshot = True
     img_name = 'test'
     
@@ -146,7 +148,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_6000_seed_0.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_106500_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -156,10 +158,23 @@ def main(args):
     policy_class = config['policy_class']
     policy_config = config['policy_config']
     policy = make_policy(policy_class, policy_config)
-    if trained_on_gpu_server:
-        policy.model = nn.DataParallel(policy.model)
-    loading_status = policy.deserialize(torch.load(ckpt_path, map_location = torch.device('cpu')))
-    print(f'Loaded policy from: {ckpt_path} ({loading_status})')
+    checkpoint = torch.load(ckpt_path, map_location='cpu')
+
+    # Extract the state_dict (depending on your format)
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+        
+    load_status = policy.deserialize(state_dict['model_state'])
+    print(f'Loaded policy from: {ckpt_path}')
+    # Print results
+    print("=== Missing keys (in model, not in checkpoint) ===")
+    print(load_status.missing_keys)
+
+    print("\n=== Unexpected keys (in checkpoint, not in model) ===")
+    print(load_status.unexpected_keys)
+    
     if use_gpu_for_inference:
         policy.cuda()
     else:
@@ -190,7 +205,7 @@ def main(args):
     action = np.zeros(action_dim, dtype=np.float32)
 
 
-    print('---dataset stats--- \n', stats)
+    # print('---dataset stats--- \n', stats)
     # if policy_class == 'Diffusion':
     #     post_process = lambda a: ((a + 1) / 2) * (stats['action_max'] - stats['action_min']) + stats['action_min']
     # else:
@@ -317,19 +332,19 @@ def main(args):
         # cv2.imshow('first_image', first_image_for_show)
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
+            # cropped_first_image = first_image[140:-100,:,:].copy()
             if use_masks:
                 first_input = first_image[:,:640].copy()
                 binary_mask = send_array_recv_mask(first_input)
                 first_mask = (binary_mask > 0).astype(np.float32) * 255
                 if img_downsampling:
-                    first_mask = cv2.resize(first_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
-                    first_mask = first_mask[np.newaxis, :, :]
+                    # first_mask = cv2.resize(first_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
+                    first_mask = first_mask[0][np.newaxis, :, :]
                 # print("first_mask", first_mask.shape)
                 mask_obs_history[cam_name] = np.repeat(first_mask[np.newaxis, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
                 mask_obs_history['head_camera'][0] = first_mask
                 # print("next value", mask_obs_history["head_camera"].shape)
-        if img_downsampling:
-            first_image = cv2.resize(first_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
+            # first_image = cv2.resize(cropped_first_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
         first_image = rearrange(first_image, 'h w c -> c h w')
 
         image_obs_history[cam_name] = np.repeat(first_image[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0) #0xxx0xxx0
@@ -441,22 +456,23 @@ def main(args):
                     current_image = image_recorder.get_images()[cam_name]
 
                     if cam_name == 'head_camera':
+                        # cropped_image = current_image[140:-100,:,:].copy()
                         if use_masks:
                             current_input = current_image[:,:640].copy()
                             binary_mask = send_array_recv_mask(current_input)
-
+                            current_mask = (binary_mask > 0).astype(np.float32) * 255
                             # current_mask = np.expand_dims(binary_mask, axis=0) # channel dim
                             if img_downsampling:
-                                binary_mask = cv2.resize(binary_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
-                                binary_mask = binary_mask[np.newaxis, :, :]
+                                # binary_mask = cv2.resize(binary_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
+                                current_mask = current_mask[0][np.newaxis, :, :]
                             # print("head_cam_mask", binary_mask.shape)
                             if num_image_obs >1:
                                 mask_obs_history[cam_name][1:] =  mask_obs_history[cam_name][:-1]
-                                mask_obs_history[cam_name][0] = binary_mask
+                                mask_obs_history[cam_name][0] = current_mask
                             else:
-                                mask_obs_history[cam_name][0] = binary_mask
-                    if img_downsampling:
-                        current_image = cv2.resize(current_image, dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
+                                mask_obs_history[cam_name][0] = current_mask
+                        # current_image = cv2.resize(cropped_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
+
                     # current_image = rearrange(image_recorder.get_images()[cam_name], 'h w c -> c h w')
                     current_image = rearrange(current_image, 'h w c -> c h w')
 
@@ -474,7 +490,7 @@ def main(args):
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
                 # print("all cam", all_cam_images.shape)
-                # print('mask_obs_histroy', mask_obs_history['head_camera'].shape)
+                # print('mask_obs_history', mask_obs_history['head_camera'].shape)
                 if use_masks:
                     all_cam_masks = []
                     for cam_name in camera_names:
@@ -483,6 +499,7 @@ def main(args):
                             all_cam_masks = np.stack(all_cam_masks, axis =0)
 
                 # move data into GPU
+                cam_masks = None
                 if use_gpu_for_inference:
                     if inference_batch == 1:
                         robot_obs_history_torch = torch.from_numpy(robot_obs_history_flat).float().cuda().unsqueeze(0)
@@ -500,8 +517,56 @@ def main(args):
                     if use_masks:
                         cam_masks = torch.from_numpy(all_cam_masks).float().cpu().unsqueeze(0)
                 # print("image", cam_images.shape, "masks", cam_masks.shape)
+                
+                # if img_downsampling:
+                #     transformations = [
+                #         # transforms.RandomRotation(degrees=[-5.0, 5.0], expand=False),
+                #         # transforms.RandomCrop(size=[int(original_size[0] * ratio), int(original_size[1]/2 * ratio)]),
+                #         transforms.Resize(size=img_downsampling_size),
+                #         transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5, hue=0.08),
+                #     ]
+                #     for transform in transformations:
+                #         cam_images = transform(cam_images)
+                #     cam_masks = transforms.Resize(size=img_downsampling_size)(cam_masks)
+                
+                
+                if img_downsampling:
+                    # color_jitter = transforms.ColorJitter(brightness=0.3,contrast=0.4,saturation=0.5,hue=0.08)
+
+                    # # Apply ColorJitter per image (expects [C, H, W] inputs)
+                    # cam_images = torch.stack([color_jitter(img) for img in cam_images])
+
+                    # Resize cam_images: shape [B, C, H, W]
+                    target_h, target_w = img_downsampling_size
+                    B, K, T, C, H, W = cam_images.shape
+                    cam_images = cam_images.view(B * K * T, C, H, W)
+
+                    cam_images = F.interpolate(
+                        cam_images,
+                        size=(target_h, target_w),  # New H, W
+                        mode='bilinear',
+                        align_corners=False
+                    )
+
+                    # Restore original shape
+                    cam_images = cam_images.view(B, K, T, C, target_h, target_w)
+                    B, K, T, C, H, W = cam_masks.shape
+                    cam_masks = cam_masks.view(B * K * T, C, H, W)
+
+                    cam_masks = F.interpolate(
+                        cam_masks,
+                        size=(target_h, target_w),  # New H, W
+                        mode='bilinear',
+                        align_corners=False
+                    )
+
+                    # Restore original shape
+                    cam_masks = cam_masks.view(B, K, T, C, target_h, target_w)
+
+
                 t2 = time.time()
                 # policy inference
+                # print("shape", cam_images.shape, cam_masks.shape) # [1,3,2,3,240,640] [2,1,240,640]
                 all_actions = policy(robot_obs_history_torch, cam_images, cam_masks) # action dim: [1, chunk_size, action_dim]
                 t3 = time.time()
                 all_actions = all_actions.cpu().numpy()
@@ -619,7 +684,7 @@ def main(args):
         desired_gripper_pose = action[-num_robots:]
 
         # print('desired_gripper_pose: ', desired_gripper_pose)
-        print('dsr_desired_pose: ', dsr_desired_pose)
+        # print('dsr_desired_pose: ', dsr_desired_pose)
         # print('dsr_state_xpos: ', dsr_state_xpos)
         # print('dsr_state_euler: ', dsr_state_euler)
         
@@ -753,4 +818,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_dir', action='store', type=str, help='Check Point Directory.', required=True)
     parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='mask_demo', required=False)
+    # parser.add_argument('--use_masks', action='store_true')
     main(vars(parser.parse_args()))

@@ -12,8 +12,8 @@ import json
 app = Flask(__name__)
 
 # Global state
-tam_checkpoint = "external/tamapp/checkpoints/efficienttam_ti_512x512.pt"
-model_cfg = "configs/efficienttam/efficienttam_ti_512x512.yaml"
+tam_checkpoint = "external/tamapp/checkpoints/efficienttam_ti.pt"
+model_cfg = "configs/efficienttam/efficienttam_ti.yaml"
 classes = [0, 1, 2, 3]
 click_points = {cls: [] for cls in classes}
 current_class = 0
@@ -115,8 +115,8 @@ def process_mask_frame(frame):
         color = (0, 255, 0) if cls == current_class else (200, 200, 200)
         cv2.putText(frame_with_mask, f"Class {cls}", (10, 60 + i * 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-    
-    ret, buffer = cv2.imencode('.jpg', frame_with_mask)
+    frame_with_mask_rgb = cv2.cvtColor(frame_with_mask, cv2.COLOR_BGR2RGB)
+    ret, buffer = cv2.imencode('.jpg', frame_with_mask_rgb)
     if ret:
         latest_mask_bytes = buffer.tobytes()
 
