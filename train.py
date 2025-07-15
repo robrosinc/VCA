@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
+import torch.nn.init as init
 
 from robot.constants import HZ
 from utils import load_data  # data functions
@@ -68,6 +69,10 @@ def make_policy(policy_class, policy_config):
         raise NotImplementedError
     return policy
 
+def remove_module_prefix(state_dict):
+    return {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+
+
 def train(rank, world_size, args):
     setup(rank, world_size)
     set_seed(args["seed"] + rank)
@@ -98,7 +103,7 @@ def train(rank, world_size, args):
     name_filter = task_config.get("name_filter", lambda n: True)
 
     # fixed parameters
-    state_dim = 20
+    state_dim = 29
     action_dim = 20
     lr_backbone = args["lr"]
     backbone = "resnet34"
@@ -201,14 +206,24 @@ def train(rank, world_size, args):
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda(rank)
+    for param in policy.model.parameters():
+        param.requires_grad = True # False
+    for name, param in policy.model.named_parameters():
+        if name.startswith("mask"):
+            param.requires_grad = True
+            if 'weight' in name:
+                if param.dim() >= 2:
+                    init.kaiming_normal_(param, mode ='fan_out', nonlinearity='relu')
+            elif 'bias' in name:
+                init.zeros_(param)
     policy = DDP(policy, device_ids=[rank], find_unused_parameters=True)
-    optimizer = policy.module.configure_optimizers()
+    optimizer = policy.module.configure_optimizers(lr_backbone, args['lr'], 1e-4)
 
     is_wandb = is_wandb and (rank==0)
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
-            project="SAMIL-139",
+            project="SAMIL-213-sratch",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,
@@ -225,16 +240,17 @@ def train(rank, world_size, args):
         pickle.dump(norm_stats, f)
 
     if config["resume_ckpt_path"] is not None:
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-        ckpt = torch.load(config["resume_ckpt_path"], map_location= map_location)
+        # map_location = lambda storage, loc: torch.device(f"cuda:{rank}")
+        ckpt = torch.load(config["resume_ckpt_path"], map_location= f"cuda:{rank}")
 
         if 'model_state' in ckpt:
             loading_status = policy.module.deserialize(ckpt['model_state'])
         else:
-            model_dict = ckpt
-            expanded_weight = expand_linear_weight_with_padding(policy.module.model.encoder_joint_proj, model_dict['model.encoder_joint_proj.weight'])
-            model_dict['model.encoder_joint_proj.weight'] = expanded_weight
-            policy.module.deserialize(model_dict)
+            model_dict = remove_module_prefix(ckpt)
+            status = policy.module.deserialize(model_dict)
+            if rank == 0 and (status.missing_keys or status.unexpected_keys):
+                print(f"Missing keys : {status.missing_keys} / Unexpected keys: {status.unexpected_keys}")
+
 
         start_step = ckpt.get('step', 0)
         if 'optim_state' in ckpt:
@@ -349,7 +365,7 @@ if __name__ == "__main__":
         "--num_steps",
         action="store",
         type=int,
-        default=100000,
+        default=50,
         help="num_steps",
         required=True,
     )
@@ -414,7 +430,7 @@ if __name__ == "__main__":
         "--chunk_size",
         action="store",
         type=int,
-        default=100,
+        default=24,
         help="chunk_size",
         required=False,
     )
@@ -422,7 +438,7 @@ if __name__ == "__main__":
         "--robot_obs_size",
         action="store",
         type=int,
-        default=100,
+        default=2,
         help="robot state observation_size",
         required=False,
     )
@@ -430,7 +446,7 @@ if __name__ == "__main__":
         "--img_obs_size",
         action="store",
         type=int,
-        default=1,
+        default=2,
         help="image observation_size",
         required=False,
     )
@@ -438,7 +454,7 @@ if __name__ == "__main__":
         "--img_obs_every",
         action="store",
         type=int,
-        default=1,
+        default=10,
         help="image observation every n steps",
         required=False,
     )
