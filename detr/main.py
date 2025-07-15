@@ -249,7 +249,7 @@ def build_ACT_model_and_optimizer(args_override):
                 for n, p in model.named_parameters()
                 if ("mask" in n) and p.requires_grad
             ],
-            "lr": 1e-3,
+            "lr": 1e-5,
         },
         {
             "params": [
