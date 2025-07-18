@@ -147,4 +147,4 @@ ckpts/
 
 *.png
 *.npy
-play.ipynb
+play.ipynb~dataset/with_mask/checkpoints

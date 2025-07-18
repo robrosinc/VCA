@@ -228,12 +228,11 @@ class DiffusionPolicy(nn.Module):
 class ACTPolicy(nn.Module):
     def __init__(self, args_override):
         super().__init__()
-        model, optimizer = build_ACT_model_and_optimizer(args_override)
-        self.model = model  # CVAE decoder
-        self.optimizer = optimizer
+        model,optimizer = build_ACT_model_and_optimizer(args_override)
+        self.model = model
+        self.optimizer = optimizer # None
         self.kl_weight = args_override["kl_weight"]
         self.vq = args_override["vq"]
-        print(f"KL Weight {self.kl_weight}")
 
     def __call__(self, robot_state, image, masks=None, actions=None, is_pad=None, vq_sample=None):
         env_state = None
@@ -277,7 +276,27 @@ class ACTPolicy(nn.Module):
         mu, logvar = self.model(robot_state, None, None, actions, is_pad, None, encoding_only=True)
         return mu, logvar
         
-    def configure_optimizers(self):
+    def configure_optimizers(self, lr_backbone, lr, weight_decay):
+#        param_dicts = [
+ #           {
+  #              "params": [
+   #                 p
+    #                for n, p in self.model.named_parameters()
+     #               if (("backbone" not in n) or ("mask" in n)) and p.requires_grad
+      #          ]
+       #     },
+        #    {
+         #       "params": [
+          #          p
+           #         for n, p in self.model.named_parameters()
+            #        if (("backbone" in n) and ("mask" not in n)) and p.requires_grad
+             #   ],
+              #  "lr": lr_backbone,
+ #           },
+  #      ]
+   #     self.optimizer = torch.optim.AdamW(
+    #        param_dicts, lr= lr, weight_decay=weight_decay
+     #   )
         return self.optimizer
 
     @torch.no_grad()

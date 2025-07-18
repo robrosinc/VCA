@@ -19,7 +19,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-import torch.nn.init as init
 
 from robot.constants import HZ
 from utils import load_data  # data functions
@@ -34,23 +33,6 @@ import IPython
 
 e = IPython.embed
 
-def setup():
-    rank       = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ["LOCAL_RANK"])
-
-    torch.cuda.set_device(local_rank)
-
-    dist.init_process_group(
-        backend="nccl",
-        init_method="env://",
-        rank=rank,
-        world_size=world_size,
-    )
-    return rank, world_size, local_rank
-
-def cleanup():
-    dist.destroy_process_group()
 
 os.environ["NCCL_DEBUG"] = "INFO"
 os.environ["NCCL_IB_DISABLE"] = "1"
@@ -68,13 +50,6 @@ def setup(rank, world_size):
 def cleanup():
     dist.destroy_process_group()
 
-def expand_linear_weight_with_padding(model_layer, ckpt_weight):
-    new_weight = model_layer.weight.data.clone()
-    in_dim_ckpt = ckpt_weight.shape[1]
-    new_weight[:,:in_dim_ckpt] = ckpt_weight
-    new_weight[:, 20:] =0
-    return new_weight
-
 def make_policy(policy_class, policy_config):
     if policy_class == "ACT":
         policy = ACTPolicy(policy_config)
@@ -85,10 +60,6 @@ def make_policy(policy_class, policy_config):
     else:
         raise NotImplementedError
     return policy
-
-def remove_module_prefix(state_dict):
-    return {k.replace("module.", "", 1): v for k, v in state_dict.items()}
-
 
 def train(rank, world_size, args):
     setup(rank, world_size)
@@ -164,26 +135,6 @@ def train(rank, world_size, args):
         "prediction_len": args["prediction_len"],
     }
 
-
-    train_loader, val_loader, train_sampler, val_sampler, norm_stats, is_sim = load_data(
-        dataset_dir,
-        name_filter,
-        camera_names,
-        batch_size_train,
-        batch_size_val,
-        args["chunk_size"],
-        args["robot_obs_size"],
-        args["img_obs_size"],
-        args["img_obs_every"],
-        args["skip_mirrored_data"],
-        args["load_pretrain"],
-        policy_class,
-        stats_dir_l=stats_dir,
-        sample_weights=sample_weights,
-        train_ratio=train_ratio,
-        use_depth=use_depth,
-    )
-
     config = {
         "num_steps": num_steps,
         "eval_every": eval_every,
@@ -209,6 +160,24 @@ def train(rank, world_size, args):
         "batch_size": batch_size_train,
     }
 
+    train_loader, val_loader, train_sampler, val_sampler, norm_stats, is_sim = load_data(
+        dataset_dir,
+        name_filter,
+        camera_names,
+        batch_size_train,
+        batch_size_val,
+        args["chunk_size"],
+        args["robot_obs_size"],
+        args["img_obs_size"],
+        args["img_obs_every"],
+        args["skip_mirrored_data"],
+        config["load_pretrain"],
+        policy_class,
+        stats_dir_l=stats_dir,
+        sample_weights=sample_weights,
+        train_ratio=train_ratio,
+        use_depth=use_depth,
+    )
 
     num_steps = config["num_steps"]
     ckpt_dir = config["ckpt_dir"]
@@ -223,24 +192,14 @@ def train(rank, world_size, args):
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda(rank)
-    for param in policy.model.parameters():
-        param.requires_grad = True # False
-    for name, param in policy.model.named_parameters():
-        if name.startswith("mask"):
-            param.requires_grad = True
-            if 'weight' in name:
-                if param.dim() >= 2:
-                    init.kaiming_normal_(param, mode ='fan_out', nonlinearity='relu')
-            elif 'bias' in name:
-                init.zeros_(param)
     policy = DDP(policy, device_ids=[rank], find_unused_parameters=True)
-    optimizer = policy.module.configure_optimizers(lr_backbone, args['lr'], 1e-4)
+    optimizer = policy.module.configure_optimizers()
 
     is_wandb = is_wandb and (rank==0)
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
-            project="SAMIL-213-sratch",
+            project="SAMIL-multigpu",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,
@@ -257,37 +216,25 @@ def train(rank, world_size, args):
         pickle.dump(norm_stats, f)
 
     if config["resume_ckpt_path"] is not None:
-        # map_location = lambda storage, loc: torch.device(f"cuda:{rank}")
-        ckpt = torch.load(config["resume_ckpt_path"], map_location= f"cuda:{rank}")
-
-        if 'model_state' in ckpt:
-            loading_status = policy.module.deserialize(ckpt['model_state'])
-        else:
-            model_dict = remove_module_prefix(ckpt)
-            status = policy.module.deserialize(model_dict)
-            if rank == 0 and (status.missing_keys or status.unexpected_keys):
-                print(f"Missing keys : {status.missing_keys} / Unexpected keys: {status.unexpected_keys}")
-
-
-        start_step = ckpt.get('step', 0)
-        if 'optim_state' in ckpt:
-            optimizer.load_state_dict(ckpt['optim_state'])
-            print(
-                f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}, Step: {start_step}'
-            )
-        else:
-            print("No optimizer found, starting fresh")
-
-    else:
-        start_step = 0
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        ckpt = torch.load(config["resume_ckpt_path"], map_location= map_location)
+        optimizer.load_state_dict(ckpt['optim_state'])
+        loading_status = policy.module.deserialize(ckpt['model_state'])
+        print(
+            f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}'
+        )
+    
     step_per_epoch = len(train_loader)
     print(f'step_per_epoch: {step_per_epoch}')
     total_steps = args['num_steps']
 
+    best_val_loss = float('inf')
+    best_ckpt_info = None
+
     train_iter = iter(train_loader)
     current_epoch = 0
     
-    progress_bar = tqdm(range(start_step,total_steps), desc=f"Training (GPU-{rank})")
+    progress_bar = tqdm(range(total_steps), desc=f"Training (GPU-{rank})")
 
     try:
         for step in progress_bar:       
@@ -315,15 +262,45 @@ def train(rank, world_size, args):
             if is_wandb:
                 wandb.log(forward_dict, step=step) 
 
+            if step % args['validate_every'] == 0 and step != 0:
+                policy.eval()
+                val_losses = []
+                with torch.no_grad():
+                    for val_batch in val_loader:
+                        image_data, robot_state_data, action_data, is_pad, mask_data = [d.cuda(rank, non_blocking=True) for d in val_batch]
+                        output = policy(robot_state_data, image_data, action_data, is_pad, mask_data)
+                        val_losses.append(output['loss'].item())
+
+                val_loss = np.mean(val_losses)
+
+                if is_wandb:
+                    wandb.log({"val_loss": val_loss}, step=step)
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_ckpt_info = {
+                        'model_state': deepcopy(policy.module.serialize()),
+                        'optim_state' : deepcopy(optimizer.state_dict()),
+                    }
+
             if step % save_every == 0 and rank ==0:
                 ckpt_path = os.path.join(ckpt_dir, f"policy_step_{step}_seed_{seed}.ckpt")
                 torch.save({
                     'model_state': policy.module.serialize(),
                     'optim_state' : optimizer.state_dict(),
-                    'step' : step,
                 }, ckpt_path)
 
+        
+        if rank == 0:
+            last_path = os.path.join(args['ckpt_dir'], 'policy_last.ckpt')
+            torch.save(policy.module.serialize(), last_path)
+            
+
+
     finally:
+        if rank == 0 and best_ckpt_info is not None:
+            best_path = os.path.join(args['ckpt_dir'], 'policy_best.ckpt')
+            torch.save(best_ckpt_info, best_path)
         if is_wandb:
             wandb.finish()
         if 'train_loader' in locals():
@@ -382,13 +359,13 @@ if __name__ == "__main__":
         "--num_steps",
         action="store",
         type=int,
-        default=50,
+        default=100000,
         help="num_steps",
         required=True,
     )
 
     parser.add_argument(
-        "--lr", action="store", type=float, default=1e-4, help="lr", required=False
+        "--lr", action="store", type=float, default=1e-5, help="lr", required=False
     )
     parser.add_argument("--load_pretrain", action="store_true", default=False)
     parser.add_argument(
@@ -447,7 +424,7 @@ if __name__ == "__main__":
         "--chunk_size",
         action="store",
         type=int,
-        default=24,
+        default=40,
         help="chunk_size",
         required=False,
     )
@@ -455,7 +432,7 @@ if __name__ == "__main__":
         "--robot_obs_size",
         action="store",
         type=int,
-        default=2,
+        default=40,
         help="robot state observation_size",
         required=False,
     )
@@ -463,7 +440,7 @@ if __name__ == "__main__":
         "--img_obs_size",
         action="store",
         type=int,
-        default=2,
+        default=1,
         help="image observation_size",
         required=False,
     )
@@ -471,7 +448,7 @@ if __name__ == "__main__":
         "--img_obs_every",
         action="store",
         type=int,
-        default=10,
+        default=1,
         help="image observation every n steps",
         required=False,
     )

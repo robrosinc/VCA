@@ -30,7 +30,7 @@ ROBOT_MODEL = "a0509"
 # from DSR_ROBOT import *
 
 class dsrSingleArmControl:
-    def __init__(self, robot_id = 'dsr_l', hz = 30, teleop=True, master='gello'):
+    def __init__(self, robot_id = 'dsr_l', hz = 30, teleop=True, master='gello', thru_cpp=False):
         self.robot_id = robot_id
         self.hz = hz
         self.dt = 1/self.hz
@@ -39,9 +39,14 @@ class dsrSingleArmControl:
 
         rospy.on_shutdown(self.shutdown)
         ### publisher ###
-        self.pose_state_pub = rospy.Publisher('/'+robot_id +'/state/pose', PoseStamped, tcp_nodelay=True, queue_size=10)
-        self.joint_state_pub = rospy.Publisher('/'+robot_id +'/state/joint', Float32MultiArray, tcp_nodelay=True, queue_size=10)
-        self.pose_action_pub = rospy.Publisher('/'+robot_id +'/action/pose', PoseStamped, tcp_nodelay=True, queue_size=10)
+        if not thru_cpp:
+            self.pose_state_pub = rospy.Publisher('/'+robot_id +'/state/pose', PoseStamped, tcp_nodelay=True, queue_size=10)
+            self.joint_state_pub = rospy.Publisher('/'+robot_id +'/state/joint', Float32MultiArray, tcp_nodelay=True, queue_size=10)
+            self.pose_action_pub = rospy.Publisher('/'+robot_id +'/action/pose', PoseStamped, tcp_nodelay=True, queue_size=10)
+        else:
+            self.pose_state_pub = rospy.Publisher('/'+robot_id +'/state/posefrompython', PoseStamped, tcp_nodelay=True, queue_size=10)
+            self.pose_action_pub = rospy.Publisher('/'+robot_id +'/action/posefrompython', PoseStamped, tcp_nodelay=True, queue_size=10)
+            
         
         ### subscriber ###
         if self.master == 'quest':
@@ -614,7 +619,7 @@ class TcpClient:
         
 
 class drlControl:
-    def __init__(self, robot_id_list = ['dsr_l'], hz = 30, init_node=True, teleop=True):
+    def __init__(self, robot_id_list = ['dsr_l'], hz = 30, init_node=True, teleop=True, thru_cpp=False):
         
         if init_node:
             rospy.init_node('dsr_teleop_control_py')
