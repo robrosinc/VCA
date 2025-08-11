@@ -74,7 +74,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--hidden_dim",
-        default=256,
+        default=512,
         type=int,  # will be overridden
         help="Size of the embeddings (dimension of the transformer)",
     )
@@ -173,6 +173,7 @@ def get_args_parser():
     )
     parser.add_argument("--use_depth", action="store_true", default=False)
     parser.add_argument("--use_masks", action="store_true", default=False)
+    parser.add_argument("--use_text", action="store_true", default=False)
     parser.add_argument("--temporal_agg", action="store_true")
     parser.add_argument("--use_vq", action="store_true")
     parser.add_argument(

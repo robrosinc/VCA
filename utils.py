@@ -35,6 +35,8 @@ class EpisodicDataset(torch.utils.data.Dataset):
         img_obs_skip,
         policy_class,
         use_depth,
+        use_masks,
+        use_text
     ):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
@@ -60,6 +62,8 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.img_debug = False
 
         self.use_depth = use_depth
+        self.use_masks = use_masks
+        self.use_text = use_text
 
         self.relative_action_mode = False
         self.relative_obs_mode = False
@@ -200,7 +204,12 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 t2 = time()
                 # print('robot_state shape', original_robot_shape) # (2000, 7)
                 image_dict = dict()
-                mask_dict = dict()
+
+                if self.use_depth:
+                    depth_image_dict = dict()
+                if self.use_masks:
+                    mask_dict = dict()
+
                 img_sampling = np.clip(
                     range(
                         start_ts,
@@ -211,25 +220,39 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     self.max_episode_len,
                 )
 
+                img_sampling_np = np.array(img_sampling)
+                unique_indices, inverse_indices = np.unique(img_sampling_np, return_inverse=True)
+
                 for cam_name in self.camera_names:
                     image_dict[cam_name] = np.array(
                         root[f"/observations/images/{cam_name}"]
                     )[img_sampling]
-                    if cam_name == "head_camera":
-                        if f"{cam_name}_masks" in root["/observations/masks"]:
-                            mask_dict[cam_name] = np.expand_dims(np.array(
-                                root[f"/observations/masks/{cam_name}_masks"]
-                            )[img_sampling][:,:,:640], axis=1)
-                        elif cam_name in root["/observations/masks"]:
-                            img_sampling_np = np.array(img_sampling)
-                            unique_indices, inverse_indices = np.unique(img_sampling_np, return_inverse=True)
-                            unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
-                            decompressed_masks_unique = [
-                                np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
-                                for entry in unique_compressed
-                            ]
-                            decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
-                            mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+                    if self.use_masks and cam_name == "head_camera":
+                        # if f"{cam_name}_masks" in root["/observations/masks"]:
+                        #     mask_dict[cam_name] = np.expand_dims(np.array(
+                        #         root[f"/observations/masks/{cam_name}_masks"]
+                        #     )[img_sampling][:,:,:640], axis=1)
+                        # elif cam_name in root["/observations/masks"]:
+                        #     unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
+                        #     decompressed_masks_unique = [
+                        #         np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
+                        #         for entry in unique_compressed
+                        #     ]
+                        #     decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                        #     mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+                        if cam_name in root["/prompts/masks"]:
+                            # The data is already an uncompressed numpy array of shape (T, H, W)
+                            uncompressed_masks = root[f"/prompts/masks/{cam_name}"][()]
+                            
+                            # Select the masks using the unique and inverse indices, similar to the original logic
+                            # This assumes uncompressed_masks has a shape of (T_total, H, W) where T_total is the total number of frames
+                            selected_masks_unique = uncompressed_masks[unique_indices]
+                            
+                            # Reorder the masks based on inverse_indices
+                            selected_masks = selected_masks_unique[inverse_indices]
+                            
+                            # Stack the masks and add a new dimension
+                            mask_dict[cam_name] = np.expand_dims(selected_masks, axis=1)
                         else:
                             raise KeyError("No valid mask dataset found for head_camera")
                 # print("here", mask_dict['head_camera'].shape) # 2 1 240 640
@@ -248,19 +271,23 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         # print('image_dict[cam_name].shape', image_dict[cam_name].shape)
                 t4 = time()
 
-                all_cam_masks = []
-                for cam_name in self.camera_names:
-                    if cam_name =='head_camera':
-                        cropped_mask = mask_dict[cam_name][:,:,:,:640]
-                        for t in range(len(mask_dict[cam_name])):
-                            mask_dict[cam_name][t] = cropped_mask[t]
-                        all_cam_masks.append(mask_dict[cam_name])
-                all_cam_masks = np.stack(all_cam_masks, axis=0)
-                # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 240 640
+                if self.use_masks:
+                    all_cam_masks = []
+                    for cam_name in self.camera_names:
+                        if cam_name =='head_camera':
+                            cropped_mask = mask_dict[cam_name][:,:,:,:640]
+                            for t in range(len(mask_dict[cam_name])):
+                                mask_dict[cam_name][t] = cropped_mask[t]
+                            all_cam_masks.append(mask_dict[cam_name])
+                    all_cam_masks = np.stack(all_cam_masks, axis=0)
+                    # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 240 640
+                    mask_data = torch.from_numpy(all_cam_masks).float()
+                    mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
+                else:
+                    # Provide a placeholder tensor if masks are not used
+                    mask_data = 0
                 
                 if self.use_depth:
-                    depth_image_dict = dict()
-
                     for cam_name in self.camera_names:
                         depth_image_dict[cam_name] = np.array(
                             root[f"/observations/depth_images/{cam_name}"]
@@ -279,7 +306,23 @@ class EpisodicDataset(torch.utils.data.Dataset):
                             depth_image_dict[cam_name] = np.array(
                                 decompressed_depth_array
                             )
-                # print('depth_image_dict[cam_name].size: ', np.shape( np.array(depth_image_dict[cam_name])) )
+                else:
+                    # Provide a placeholder tensor when depth is not used
+                    depth_data = 0
+
+                if self.use_text:
+                    input_ids = root['/prompts/text/input_ids'][unique_indices]
+                    attention_mask = root['/prompts/text/attention_mask'][unique_indices]
+                    input_ids = [input_ids[i] for i in inverse_indices]
+                    attention_mask = [attention_mask[i] for i in inverse_indices]
+                    # Convert the Python lists to PyTorch tensors
+                    input_ids = torch.stack([torch.tensor(x) for x in input_ids])
+                    attention_mask = torch.stack([torch.tensor(x) for x in attention_mask])
+
+                else:
+                    # Provide a placeholder tensor when text is not used
+                    input_ids = torch.tensor(0)
+                    attention_mask = torch.tensor(0)
 
                 # get all actions after and including start_ts
                 action = action[start_ts:]
@@ -387,31 +430,14 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
             all_cam_images = np.stack(all_cam_images, axis=0)
 
-            # print('all_cam_images:', all_cam_images.shape) # 3 2 480 1280 3
-            # all_cam_images = all_cam_images[:, :start_ts+1]
-            # image_len = start_ts+1
-
-            # original_image_stack_shape = all_cam_images.shape ## (camera num, epi len, h, w, c)
-
-            # padded_all_cam_images = np.zeros((original_image_stack_shape[0], self.max_episode_len, original_image_stack_shape[2], original_image_stack_shape[3], original_image_stack_shape[4]), dtype=np.int8)
-            # for cam_id in range(original_image_stack_shape[0]):
-            #     padded_all_cam_images[cam_id, :] = all_cam_images[cam_id, 0]
-            #     padded_all_cam_images[cam_id, :] = all_cam_images[cam_id, 0]
-
-            # padded_all_cam_images[:, -image_len:] = all_cam_images[:, :start_ts+1]
-            # padded_all_cam_images = padded_all_cam_images[:, -self.img_obs_size:]
-            # padded_all_cam_images = padded_all_cam_images[:, ::-1]
-            t7 = time()
-
             # construct torch data
             action_data = torch.from_numpy(np.array(padded_action)).float()
             robot_state_data = torch.from_numpy(np.array(padded_robot_state)).float()
             image_data = torch.from_numpy(np.array(all_cam_images))
-            mask_data = torch.from_numpy(all_cam_masks).float()
+            # depth_data = torch.from_numpy(np.array(all_depth_images))
             is_pad = torch.from_numpy(is_pad).bool()
             # channel last
             image_data = torch.einsum("k t h w c -> k t c h w", image_data)
-            t8 = time()
 
             if self.img_debug:
                 image_data_for_show = torch.einsum(
@@ -440,7 +466,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
                 for transform in self.transformations:
                     image_data = transform(image_data)
-                mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
 
             if self.img_debug:
                 image_data_for_show = torch.einsum(
@@ -502,12 +527,9 @@ class EpisodicDataset(torch.utils.data.Dataset):
         # print("duration 4: ", t4-t3)
         # print("duration 5: ", t5-t4)
         # print("duration 6: ", t6-t5)
-        # print("duration 7: ", t7-t6)
-        # print("duration 8: ", t8-t7)
-        # print("duration 9: ", t9-t8)
         # print(image_data.dtype, qpos_data.dtype, action_data.dtype, is_pad.dtype)
         # print("image", image_data.shape, "mask", mask_data.shape) # 3 2 3 240 640 / 1 2 1 240 640
-        return image_data, robot_state_data, action_data, is_pad, mask_data
+        return image_data, robot_state_data, action_data, is_pad, depth_data, mask_data, input_ids, attention_mask
 
 
 def get_norm_stats(dataset_path_list):
@@ -676,7 +698,7 @@ def get_norm_stats(dataset_path_list):
 def find_all_hdf5(dataset_dir, skip_mirrored_data):
     hdf5_files = []
     for root, dirs, files in os.walk(dataset_dir):
-        for filename in fnmatch.filter(files, "*.hdf5"):
+        for filename in fnmatch.filter(files, "*.h5"):
             if "features" in filename:
                 continue
             if skip_mirrored_data and "mirror" in filename:
@@ -727,6 +749,8 @@ def load_data(
     sample_weights=None,
     train_ratio=0.95,
     use_depth=False,
+    use_masks=False,
+    use_text=False
 ):
     if type(dataset_dir_l) == str:
         dataset_dir_l = [dataset_dir_l]
@@ -808,6 +832,8 @@ def load_data(
         img_obs_skip,
         policy_class,
         use_depth,
+        use_masks,
+        use_text
     )
     val_dataset = EpisodicDataset(
         dataset_path_list,
@@ -821,6 +847,8 @@ def load_data(
         img_obs_skip,
         policy_class,
         use_depth,
+        use_masks,
+        use_text
     )
     train_sampler = DistributedSampler(train_dataset, shuffle=True)
     val_sampler = DistributedSampler(val_dataset, shuffle=False)
@@ -830,7 +858,7 @@ def load_data(
         batch_size=batch_size_train,
         sampler=train_sampler,
         pin_memory=True,
-        num_workers=11,
+        num_workers=4,
         prefetch_factor=2,
         persistent_workers=True, 
     )
@@ -839,7 +867,7 @@ def load_data(
         batch_size=batch_size_val,
         sampler=val_sampler,
         pin_memory=True,
-        num_workers=10,
+        num_workers=4,
         prefetch_factor=2,
         persistent_workers=True, 
     )

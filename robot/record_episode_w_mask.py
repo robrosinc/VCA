@@ -142,7 +142,7 @@ def main(args):
     }
     for cam_name in camera_names:
         data_dict[f'/observations/images/{cam_name}'] = []
-        data_dict[f'/observations/masks/{cam_name}'] = []
+        data_dict[f'/prompts/masks/{cam_name}'] = []
         # data_dict[f'/observations/depth_images/{cam_name}'] = []
 
 
@@ -256,7 +256,7 @@ def main(args):
                 # print(current_mask.shape, current_mask.min(), current_mask.max(), np.count_nonzero(current_mask))
 
                 # print('mask shape', current_mask.shape, 'should be 0 640') # 1 480 640
-                data_dict[f'/observations/masks/{cam_name}'].append(current_mask.squeeze(0))
+                data_dict[f'/prompts/masks/{cam_name}'].append(current_mask.squeeze(0))
             # data_dict[f'/observations/depth_images/{cam_name}'].append((image_recorder.get_depth_images())[cam_name])
             # print(f'{cam_name} size = {image_recorder.get_images()[cam_name].shape}')
         
@@ -331,7 +331,7 @@ def main(args):
             data_dict[f'/observations/images/{cam_name}'] = compressed_list
             
             if cam_name == 'head_camera':
-                mask_list = data_dict[f'/observations/masks/{cam_name}']
+                mask_list = data_dict[f'/prompts/masks/{cam_name}']
                 compressed_mask_list = []
                 compressed_mask_len.append([])
                 for mask in mask_list:

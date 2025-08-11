@@ -97,6 +97,7 @@ def train(rank, world_size, args):
     is_wandb = args["wandb"]
     use_depth = args["use_depth"]
     use_masks = args["use_masks"]
+    use_text = args["use_text"]
     ckpt_dir = args["ckpt_dir"]
     policy_class = args["policy_class"]
     onscreen_render = args["onscreen_render"]
@@ -182,6 +183,8 @@ def train(rank, world_size, args):
         sample_weights=sample_weights,
         train_ratio=train_ratio,
         use_depth=use_depth,
+        use_masks=use_masks,
+        use_text=use_text
     )
 
     config = {
@@ -205,7 +208,9 @@ def train(rank, world_size, args):
         "load_pretrain": args["load_pretrain"],
         "actuator_config": actuator_config,
         "is_wandb": is_wandb,
+        "use_depth": use_depth,
         "use_masks": use_masks,
+        "use_text": use_text,
         "batch_size": batch_size_train,
     }
 
@@ -219,7 +224,6 @@ def train(rank, world_size, args):
     validate_every = config["validate_every"]
     save_every = config["save_every"]
     is_wandb = config["is_wandb"] and (rank == 0)
-    use_masks = config["use_masks"]
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda(rank)
@@ -301,9 +305,9 @@ def train(rank, world_size, args):
                 print(f'current_epoch: {current_epoch}')
 
             policy.train()
-            image_data, robot_proprio_data, action_data, is_pad, mask_data = [d.cuda(rank) for d in data]
+            image_data, robot_proprio_data, action_data, is_pad, depth_data, mask_data, input_ids, attention_mask = [d.cuda(rank) for d in data]
 
-            forward_dict = policy(robot_proprio_data, image_data, mask_data, action_data, is_pad)
+            forward_dict = policy(robot_proprio_data, image_data, depth_data, mask_data, input_ids, attention_mask, action_data, is_pad)
             loss = forward_dict["loss"]
         
             optimizer.zero_grad()
@@ -475,8 +479,11 @@ if __name__ == "__main__":
         help="image observation every n steps",
         required=False,
     )
+
     parser.add_argument("--use_depth", action="store_true", default=False)
     parser.add_argument("--use_masks", action="store_true", default=False)
+    parser.add_argument("--use_text", action="store_true", default=False)
+
     parser.add_argument(
         "--hidden_dim",
         action="store",

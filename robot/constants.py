@@ -2,7 +2,7 @@ import pathlib
 import os
 
 ### Task parameters
-DATA_DIR = os.path.expanduser('~/dataset/with_mask/with_mask_teleop')
+DATA_DIR = os.path.expanduser('/mnt/ddrive/Downloads/with_mask_teleop/with_mask_teleop/test')
 TASK_CONFIGS = {
     ### BLOCK SORT
     'dsr_block_collect':{
@@ -44,6 +44,14 @@ TASK_CONFIGS = {
     },
     'mask_demo':{
         'dataset_dir': DATA_DIR + '/dsr_block_sort_with_mask',
+        'episode_len': 5000,
+        'train_ratio': 0.99,
+        'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],
+        'robot_id_list': ['dsr_l', 'dsr_r'],
+        # 'sample_weights': [3,1],
+    },
+    'text_demo':{
+        'dataset_dir': [DATA_DIR],
         'episode_len': 5000,
         'train_ratio': 0.99,
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],

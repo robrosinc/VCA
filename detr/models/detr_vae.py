@@ -2,6 +2,7 @@
 """
 DETR model and criterion classes.
 """
+from matplotlib import text
 import torch
 from torch import nn
 from torch.autograd import Variable
@@ -34,7 +35,7 @@ def get_sinusoid_encoding_table(n_position, d_hid):
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbones, mask_backbones, transformer, encoder, args):
+    def __init__(self, backbones, mask_backbones, text_encoder, transformer, encoder, args):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
@@ -54,7 +55,9 @@ class DETRVAE(nn.Module):
         self.encoder = encoder
         self.vq, self.vq_class, self.vq_dim = args.vq, args.vq_class, args.vq_dim
         self.state_dim, self.action_dim = args.state_dim, args.action_dim
+        self.use_depth = args.use_depth
         self.use_masks = args.use_masks
+        self.use_text = args.use_text
         hidden_dim = transformer.d_model
         self.action_head = nn.Linear(hidden_dim, args.action_dim)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
@@ -66,6 +69,11 @@ class DETRVAE(nn.Module):
             if mask_backbones is not None:
                 self.input_proj_masks = nn.Conv2d(mask_backbones[0].num_channels, hidden_dim, kernel_size = 1)
                 self.mask_backbones = nn.ModuleList(mask_backbones)
+            elif text_encoder is not None:
+                self.text_encoder = text_encoder
+                self.input_proj_text = nn.Linear(text_encoder.output_dim, hidden_dim)
+                self.text_pos_embed = nn.Embedding(text_encoder.max_text_len*self.num_image_observations, hidden_dim)
+
         else:
             # input_dim = 14 + 7 # robot_state + env_state
             self.input_proj_robot_state = nn.Linear(self.state_dim*self.num_robot_observations, hidden_dim)
@@ -153,7 +161,7 @@ class DETRVAE(nn.Module):
 
         return latent_input, probs, binaries, mu, logvar
 
-    def forward(self, qpos, image, env_state, masks = None, actions=None, is_pad=None, vq_sample=None, encoding_only=False):
+    def forward(self, qpos, image, env_state, depth = None, masks = None, input_ids = None, attention_mask = None, actions=None, is_pad=None, vq_sample=None, encoding_only=False):
         """
         qpos: batch, num_obs, robot_state_dim
         image: batch, num_cam, num_obs, channel, height, width
@@ -179,12 +187,12 @@ class DETRVAE(nn.Module):
                     all_cam_features.append(self.input_proj(features))
                     all_cam_pos.append(pos)
                     del features, pos
-
             torch.cuda.empty_cache()
-            if self.mask_backbones is not None:
+
+            if self.use_masks:
                 for i in range(len(self.mask_backbones)):
                     for t in range(self.num_image_observations):
-                        # print("1", masks.shape) # 1 1 2 1 240 640
+                        print("1", masks.shape) # 1 1 2 1 240 640
                         # print("2", masks[:,i,t].shape) # 1 1 240 640
                         features, pos = self.mask_backbones[i](masks[:, i, t])
                         features = features[0] # take the last layer feature
@@ -193,14 +201,54 @@ class DETRVAE(nn.Module):
                         all_cam_features.append(self.input_proj_masks(features))
                         all_cam_pos.append(pos)
                         del features, pos
-
             torch.cuda.empty_cache()
+            # print(all_cam_pos[0].shape)  # (B, hidden_dim, H, W)
+
+            if self.use_text:
+                # all_cam_features, all_cam_pos flatten, permute는 나중에 텐서로 합친 후에
+                # 먼저 리스트를 tensor로 바꿔줍니다.
+                all_cam_features_tensor = torch.stack(all_cam_features, dim=1)  # (B, n*k, C, H, W) (16, 6, 512, 8, 20)
+                all_cam_pos_tensor = torch.stack(all_cam_pos, dim=1)  # (1, n*k, C, H, W) (1, 6, 512, 8, 20)
+
+                # flatten spatial dimensions
+                B, x, C, H, W = all_cam_features_tensor.shape
+                all_cam_features_tensor = all_cam_features_tensor.view(B, x, C, H * W)  # (B, n*k, C, 160)
+                all_cam_pos_tensor = all_cam_pos_tensor.view(x, C, H * W)  # (n*k, C, 160)
+
+                # permute and reshape to (B, 160*n*k, C)
+                all_cam_features_tensor = all_cam_features_tensor.permute(0, 3, 1, 2).reshape(B, H * W * x, C)
+                all_cam_pos_tensor = all_cam_pos_tensor.permute(2, 0, 1).reshape(H * W * x, C)
+
+                all_text_features = []
+                for t in range(self.num_image_observations):
+                    features = self.text_encoder(input_ids[:, t], attention_mask=attention_mask[:, t])
+                    all_text_features.append(features)
+                    del features
+
+                all_text_features_tensor = torch.stack(all_text_features, dim=1) # (B, n, max_len, hidden_dim)
+                all_text_features_tensor = all_text_features_tensor.view(B, self.num_image_observations * self.text_encoder.max_text_len, C)
+
+                seq_len = all_text_features_tensor.size(1)
+                text_pos = self.text_pos_embed(torch.arange(seq_len, device=all_text_features_tensor.device))  # (seq_len, hidden_dim)
+
+                # all_cam_features_tensor에 텍스트 임베딩 추가
+                all_cam_features_tensor = torch.cat([all_cam_features_tensor, self.input_proj_text(all_text_features_tensor)], dim=1)
+                all_cam_pos_tensor = torch.cat([all_cam_pos_tensor, text_pos], dim=0)
+
+                src = all_cam_features_tensor
+                pos = all_cam_pos_tensor
+
+            else:
+                src = torch.cat(all_cam_features, axis=3)
+                pos = torch.cat(all_cam_pos, axis=3)
+            torch.cuda.empty_cache()
+
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos.reshape(bs, -1))
             # fold camera dimension into width dimension
-            src = torch.cat(all_cam_features, axis=3)
-            pos = torch.cat(all_cam_pos, axis=3)
-            # print(src.shape) # B 512 8 160  for each camera 40 if obs_img is 2, 20 if 1 
+
+            # print(src.shape) # B 512 8 160  for each camera 40 if obs_img is 2, 20 if 1
+            # print(pos.shape) # B 320*n + seq_len, 512 for n camera
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
@@ -214,6 +262,7 @@ class DETRVAE(nn.Module):
 
 
 class CNNMLP(nn.Module):
+
     def __init__(self, backbones, state_dim, camera_names):
         """ Initializes the model.
         Parameters:
@@ -323,6 +372,13 @@ def build(args):
                 mask_backbone = build_mask_backbone(args)
                 mask_backbones.append(mask_backbone)
 
+    text_encoder = None
+    if args.use_text:
+        # from transformers import AutoTokenizer
+        # tokenizer = AutoTokenizer.from_pretrained('prajjwal1/bert-small')
+        from .bert import build_bert
+        text_encoder = build_bert(args)
+
     transformer = build_transformer(args)
 
     if args.no_encoder:
@@ -333,6 +389,7 @@ def build(args):
     model = DETRVAE(
         backbones,
         mask_backbones,
+        text_encoder,
         transformer,
         encoder,
         args,

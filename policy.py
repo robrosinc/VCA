@@ -234,7 +234,7 @@ class ACTPolicy(nn.Module):
         self.kl_weight = args_override["kl_weight"]
         self.vq = args_override["vq"]
 
-    def __call__(self, robot_state, image, masks=None, actions=None, is_pad=None, vq_sample=None):
+    def __call__(self, robot_state, image, depth=None, masks=None, input_ids=None, attention_mask=None, actions=None, is_pad=None, vq_sample=None):
         env_state = None
         normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -242,14 +242,11 @@ class ACTPolicy(nn.Module):
         image = normalize(image)
         if actions is not None:  # training time
             loss_dict = dict()
-            if masks is not None:
-                a_hat, is_pad_hat, (mu, logvar), probs, binaries = self.model(
-                    robot_state, image, env_state, masks, actions, is_pad, vq_sample
-                )
-            else:
-                a_hat, is_pad_hat, (mu, logvar), probs, binaries = self.model(
-                    robot_state, image, env_state, actions = actions, is_pad = is_pad, vq_sample = vq_sample
-                )
+            a_hat, is_pad_hat, (mu, logvar), probs, binaries = self.model(
+                robot_state, image, env_state, depth, masks, input_ids, attention_mask, actions, is_pad, vq_sample
+            )
+            print("a_hat: ", a_hat.shape) # B chunksize 20 for mask
+            print("actions: ", actions.shape)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             if self.vq:
                 loss_dict["vq_discrepancy"] = F.l1_loss(
@@ -262,14 +259,9 @@ class ACTPolicy(nn.Module):
             loss_dict["loss"] = loss_dict["l1"] + loss_dict["kl"] * self.kl_weight
             return loss_dict    
         else:  # inference time
-            if masks is not None:
-                a_hat, _, (_, _), _, _ = self.model(
-                    robot_state, image, env_state, masks, vq_sample=vq_sample
-                )  # no action, sample from prior
-            else:
-                a_hat, _, (_, _), _, _ = self.model(
-                    robot_state, image, env_state, vq_sample=vq_sample
-                )  # no action, sample from prior
+            a_hat, _, (_, _), _, _ = self.model(
+                robot_state, image, env_state, depth, masks, input_ids, attention_mask, vq_sample=vq_sample
+            )  # no action, sample from prior
             return a_hat
 
     def encode(self, robot_state, actions, is_pad):
