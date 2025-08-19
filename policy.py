@@ -245,8 +245,8 @@ class ACTPolicy(nn.Module):
             a_hat, is_pad_hat, (mu, logvar), probs, binaries = self.model(
                 robot_state, image, env_state, depth, masks, input_ids, attention_mask, actions, is_pad, vq_sample
             )
-            print("a_hat: ", a_hat.shape) # B chunksize 20 for mask
-            print("actions: ", actions.shape)
+            # print("a_hat: ", a_hat.shape) # B chunksize 20 for mask
+            # print("actions: ", actions.shape)
             total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
             if self.vq:
                 loss_dict["vq_discrepancy"] = F.l1_loss(

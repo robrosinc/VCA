@@ -1,5 +1,5 @@
-torchvision=='0.21.0'
-torch=='2.6.0'
+torchvision
+torch
 pyquaternion
 pyyaml
 rospkg
@@ -13,3 +13,4 @@ ipython
 scipy
 wandb
 GPUtil
+transformers

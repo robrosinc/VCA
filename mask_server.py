@@ -91,10 +91,10 @@ def process_mask_frame(frame):
                 labels = np.array(Gathered_matrix[cls]['labels'], dtype=np.int32)
                 first_hit = np.array(Gathered_matrix[cls]['first_hit'], dtype=bool)
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    predictor.add_new_points_during_track(cls, points, labels, first_hit[0], frame)
+                    predictor.add_new_prompts_during_track(cls, points, labels, first_hit[0], frame)
         if reset_flags["reset"]:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                predictor.add_new_points(
+                predictor.add_new_prompts(
                     frame_idx=reset_flags["current_frame_idx"],
                     obj_id=reset_flags["reset_class"],
                     points=no_obj_points,

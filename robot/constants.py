@@ -2,7 +2,7 @@ import pathlib
 import os
 
 ### Task parameters
-DATA_DIR = os.path.expanduser('/mnt/ddrive/Downloads/with_mask_teleop/with_mask_teleop/test')
+DATA_DIR = os.path.expanduser('/home/app/dataset/text')
 TASK_CONFIGS = {
     ### BLOCK SORT
     'dsr_block_collect':{

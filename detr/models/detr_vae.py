@@ -83,7 +83,7 @@ class DETRVAE(nn.Module):
             print("backbones is None")
 
         # encoder extra parameters
-        self.latent_dim = 64 # final size of latent z # TODO tune
+        self.latent_dim = 128 # final size of latent z # TODO tune
         self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
         self.encoder_action_proj = nn.Linear(self.action_dim, hidden_dim) # project action to embedding
         self.encoder_joint_proj = nn.Linear(self.state_dim, hidden_dim)  # project qpos to embedding
@@ -192,7 +192,7 @@ class DETRVAE(nn.Module):
             if self.use_masks:
                 for i in range(len(self.mask_backbones)):
                     for t in range(self.num_image_observations):
-                        print("1", masks.shape) # 1 1 2 1 240 640
+                        # print("1", masks.shape) # 1 1 2 1 240 640
                         # print("2", masks[:,i,t].shape) # 1 1 240 640
                         features, pos = self.mask_backbones[i](masks[:, i, t])
                         features = features[0] # take the last layer feature
