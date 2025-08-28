@@ -126,9 +126,9 @@ def main(args):
     temporal_ensemble = True
     esb_k = 0.05
     policy_update_period = 10 # tick, work without temporal ensemble
-    use_depth = False
-    use_masks = False
-    use_text = True
+    use_depth = args.get("use_depth", False)
+    use_masks = args.get("use_masks", False)
+    use_text = args.get("use_text", False)
     overwrite = False
     relative_obs_mode = False
     relative_action_mode = False
@@ -159,7 +159,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_106500_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_113000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -370,8 +370,11 @@ def main(args):
                 )
                 max_seq_length = first_tokenized["input_ids"].shape[1]
 
-                input_ids_buffer = np.repeat(first_tokenized["input_ids"].numpy()[np.newaxis, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
-                attention_mask_buffer = np.repeat(first_tokenized["attention_mask"].numpy()[np.newaxis, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
+                ids0  = first_tokenized["input_ids"].cpu().numpy().squeeze(0).astype(np.int64)
+                mask0 = first_tokenized["attention_mask"].cpu().numpy().squeeze(0).astype(np.int64)
+
+                input_ids_buffer      = np.tile(ids0,  ((num_image_obs - 1) * image_obs_every + 1, 1))   # (T_full, L)
+                attention_mask_buffer = np.tile(mask0, ((num_image_obs - 1) * image_obs_every + 1, 1))
 
         first_image = rearrange(first_image, 'h w c -> c h w')
 
@@ -511,14 +514,14 @@ def main(args):
                                 max_length=16
                             )
 
-                            if num_image_obs >1:
-                                input_ids_buffer[1:] =  input_ids_buffer[:-1]
-                                input_ids_buffer[0] = current_tokenized["input_ids"].numpy()
-                                attention_mask_buffer[1:] =  attention_mask_buffer[:-1]
-                                attention_mask_buffer[0] = current_tokenized["attention_mask"].numpy()
-                            else:
-                                input_ids_buffer[0] = current_tokenized["input_ids"].numpy()
-                                attention_mask_buffer[0] = current_tokenized["attention_mask"].numpy()
+                            if num_image_obs > 1:
+                                input_ids_buffer[1:]      = input_ids_buffer[:-1]
+                                attention_mask_buffer[1:] = attention_mask_buffer[:-1]
+                                
+                            ids_t  = current_tokenized["input_ids"].cpu().numpy().squeeze(0).astype(np.int64)
+                            mask_t = current_tokenized["attention_mask"].cpu().numpy().squeeze(0).astype(np.int64)
+                            input_ids_buffer[0]      = ids_t
+                            attention_mask_buffer[0] = mask_t
                                 
                         # current_image = cv2.resize(cropped_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
 
@@ -556,24 +559,24 @@ def main(args):
                         if use_masks:
                             cam_masks = torch.from_numpy(all_cam_masks).float().cuda().unsqueeze(0)
                         if use_text:
-                            input_ids_torch = torch.from_numpy(input_ids_buffer).long().cuda()
-                            attention_mask_torch = torch.from_numpy(attention_mask_buffer).float().cuda()
+                            input_ids_torch = torch.from_numpy(input_ids_buffer[image_sampling]).long().cuda().unsqueeze(0)
+                            attention_mask_torch = torch.from_numpy(attention_mask_buffer[image_sampling]).long().cuda().unsqueeze(0)
                     else:
                         robot_obs_history_torch = torch.from_numpy(robot_obs_history_flat).float().cuda().unsqueeze(0).repeat_interleave(inference_batch, dim=0)
                         cam_images = torch.from_numpy(all_cam_images / 255.0).float().cuda().unsqueeze(0).repeat_interleave(inference_batch, dim=0)
                         if use_masks:
                             cam_masks = torch.from_numpy(all_cam_masks).float().cuda().unsqueeze(0).repeat_interleave(inference_batch, dim=0)
                         if use_text:
-                            input_ids_torch = torch.from_numpy(input_ids_buffer).long().cuda().repeat_interleave(inference_batch, dim=0)
-                            attention_mask_torch = torch.from_numpy(attention_mask_buffer).float().cuda().repeat_interleave(inference_batch, dim=0)
+                            input_ids_torch = torch.from_numpy(input_ids_buffer[image_sampling]).long().cuda().repeat(inference_batch, 1, 1) 
+                            attention_mask_torch = torch.from_numpy(attention_mask_buffer[image_sampling]).long().cuda().repeat(inference_batch, 1, 1) 
                 else:
                     robot_obs_history_torch = torch.from_numpy(robot_obs_history_flat).float().cpu().unsqueeze(0)
                     cam_images = torch.from_numpy(all_cam_images / 255.0).float().cpu().unsqueeze(0)
                     if use_masks:
                         cam_masks = torch.from_numpy(all_cam_masks).float().cpu().unsqueeze(0)
                     if use_text:
-                        input_ids_torch = torch.from_numpy(input_ids_buffer).long().cpu()
-                        attention_mask_torch = torch.from_numpy(attention_mask_buffer).float().cpu()
+                        input_ids_torch = torch.from_numpy(input_ids_buffer[image_sampling]).long().cpu().unsqueeze(0)
+                        attention_mask_torch = torch.from_numpy(attention_mask_buffer[image_sampling]).long().cpu().unsqueeze(0)
                 # print("image", cam_images.shape, "masks", cam_masks.shape)
                 
                 # if img_downsampling:
@@ -878,5 +881,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_dir', action='store', type=str, help='Check Point Directory.', required=True)
     parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='mask_demo', required=False)
-    # parser.add_argument('--use_masks', action='store_true')
+    parser.add_argument('--use_masks', action='store_true', required=False)
+    parser.add_argument('--use_text', action='store_true', required=False)
     main(vars(parser.parse_args()))

@@ -213,18 +213,22 @@ def send_mask_and_text(socket, mask: np.ndarray, text: str, frame_idx: int, clas
 # ------------------- Main Loop -------------------
 
 def zmq_loop(socket, use_text, use_masks, use_dual):
-    global reset_flags
-    image = recv_array(socket)
-    predictor.load_first_frame(image, len(classes))
-    reset_flags["current_frame_idx"] += 1
+    """Strict REP semantics: recv -> send -> recv -> send ..."""
+    predictor_loaded = False
 
     while True:
+        # 1) RECV: get the next image from the client (blocks until available)
+        image = recv_array(socket)
+
+        # 2) Lazy-load first frame
+        if not predictor_loaded:
+            predictor.load_first_frame(image, len(classes))
+            predictor_loaded = True
+            reset_flags["current_frame_idx"] = 0
+
+        reset_flags["current_frame_idx"] += 1
         frame_idx = reset_flags["current_frame_idx"]
-
-        mask = None
-        if use_masks or use_dual:
-            mask = process_mask_frame(image)
-
+        mask = process_mask_frame(image)
         if use_dual:
             send_mask_and_text(socket, mask, active_text_prompt or "",
                                frame_idx, current_class)

@@ -203,7 +203,6 @@ class DETRVAE(nn.Module):
                         del features, pos
             torch.cuda.empty_cache()
             # print(all_cam_pos[0].shape)  # (B, hidden_dim, H, W)
-
             if self.use_text:
                 # all_cam_features, all_cam_pos flatten, permute는 나중에 텐서로 합친 후에
                 # 먼저 리스트를 tensor로 바꿔줍니다.
@@ -220,6 +219,7 @@ class DETRVAE(nn.Module):
                 all_cam_pos_tensor = all_cam_pos_tensor.permute(2, 0, 1).reshape(H * W * x, C)
 
                 all_text_features = []
+                
                 for t in range(self.num_image_observations):
                     features = self.text_encoder(input_ids[:, t], attention_mask=attention_mask[:, t])
                     all_text_features.append(features)
@@ -371,7 +371,6 @@ def build(args):
             if name == "head_camera":
                 mask_backbone = build_mask_backbone(args)
                 mask_backbones.append(mask_backbone)
-
     text_encoder = None
     if args.use_text:
         # from transformers import AutoTokenizer
