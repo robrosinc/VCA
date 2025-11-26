@@ -83,7 +83,7 @@ class DETRVAE(nn.Module):
             print("backbones is None")
 
         # encoder extra parameters
-        self.latent_dim = 128 # final size of latent z # TODO tune
+        self.latent_dim = 64 # final size of latent z # TODO tune
         self.cls_embed = nn.Embedding(1, hidden_dim) # extra cls token embedding
         self.encoder_action_proj = nn.Linear(self.action_dim, hidden_dim) # project action to embedding
         self.encoder_joint_proj = nn.Linear(self.state_dim, hidden_dim)  # project qpos to embedding

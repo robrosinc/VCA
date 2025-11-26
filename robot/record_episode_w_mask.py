@@ -68,7 +68,6 @@ no_obj_points = np.array([[0, 0]], dtype=np.float32)
 no_obj_labels = np.array([-1], dtype=np.int32)
 
 def send_array_recv_mask(array: np.ndarray, meta: dict = {}):
-    # 메타정보: shape, dtype + 추가 사용자 정의
     meta.update({'dtype': str(array.dtype), 'shape': array.shape})
     socket.send_multipart([
         json.dumps(meta).encode('utf-8'),
@@ -81,6 +80,33 @@ def send_array_recv_mask(array: np.ndarray, meta: dict = {}):
     array = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
     return array
 
+def send_array_recv_text(array: np.ndarray, meta: dict = {}):
+    meta.update({'dtype': str(array.dtype), 'shape': array.shape})
+    socket.send_multipart([
+        json.dumps(meta).encode('utf-8'),
+        array.tobytes()
+    ])
+
+    payload = socket.recv_json()
+    
+    return payload['text']
+
+def send_array_recv_dual(array: np.ndarray, meta: dict = {}):
+    meta.update({'dtype': str(array.dtype), 'shape': array.shape})
+    socket.send_multipart([
+        json.dumps(meta).encode('utf-8'),
+        array.tobytes()
+    ])
+
+    meta_bytes, data_bytes = socket.recv_multipart()
+    meta = json.loads(meta_bytes.decode('utf-8'))
+    dtype = np.dtype(meta['dtype'])
+    shape = tuple(meta['shape'])
+    mask = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
+    text = meta['text']
+
+    return mask, text
+
 def main(args):
 
     task_config = TASK_CONFIGS[args['task_name']]
@@ -89,6 +115,9 @@ def main(args):
     camera_names = task_config['camera_names']
     robot_id_list = task_config['robot_id_list']
     num_robots = len(robot_id_list)
+    use_masks= args['use_masks']
+    use_text= args['use_text']
+    use_dual = args['use_dual']
 
     image_recorder = ImageRecorder(camera_names = task_config['camera_names'], init_node=False)
     dsr = drlControl(robot_id_list = robot_id_list, hz = HZ, init_node=True, teleop=True)
@@ -142,12 +171,13 @@ def main(args):
     }
     for cam_name in camera_names:
         data_dict[f'/observations/images/{cam_name}'] = []
-        data_dict[f'/prompts/masks/{cam_name}'] = []
+        if use_masks or use_dual:
+            data_dict[f'/prompts/masks/{cam_name}'] = []
+    if use_text or use_dual:
+        data_dict[f'/prompts/text'] =[]
         # data_dict[f'/observations/depth_images/{cam_name}'] = []
 
-
     images = dict()
-    masks = dict()
     # depth_images = dict()
     actual_dt_history = []
     
@@ -156,7 +186,7 @@ def main(args):
     task_reward = 0
     task_done = False
     
-    # check cameara streaming
+    # check camera streaming
     for cam_name in camera_names:
         images = image_recorder.get_images()
         # depth_images = image_recorder.get_depth_images()
@@ -166,16 +196,21 @@ def main(args):
                 return
             time.sleep(1.0)
             images = image_recorder.get_images()
-        # if cam_name == 'head_camera':
-        #     first_image = images[cam_name][:,:640].copy()
-        #     binary_mask = send_array_recv_mask(first_image)
-        #     first_mask = (binary_mask > 0).astype(np.float32) * 255
+        if args['task_name']=='hanoi2' and cam_name == 'head_camera':
+            if use_masks or use_dual:
+                first_image = images[cam_name][:,640:].copy()
+                binary_mask = send_array_recv_mask(first_image)
+        elif cam_name == 'head_camera':
+            if use_masks or use_dual:
+                first_image = images[cam_name][:,:640].copy()
+                binary_mask = send_array_recv_mask(first_image)
+
         # while depth_images[cam_name] is None:
         #     print('waiting '+cam_name+' depth image streaming...')
         #     if rospy.is_shutdown():
         #         return
         #     time.sleep(1.0)
-        #     images = image_recorder.get_images()
+        #     depth_images = image_recorder.get_images()
     print('Hold Master Arm Handle and wait for connection')
     master_arms.dsrConnect(connect_delay=5.0, connect_spline_duration= 5.0)
     time.sleep(5.0)
@@ -247,16 +282,43 @@ def main(args):
             current_image = (image_recorder.get_images())[cam_name]
             
             data_dict[f'/observations/images/{cam_name}'].append(current_image)
-            if cam_name == 'head_camera':
+            if  args['task_name'] == 'hanoi2' and cam_name == 'head_camera':
+                current_input = current_image[:,640:].copy()
+                if use_masks:
+                    binary_mask = send_array_recv_mask(current_input)
+                    # print(binary_mask.shape, binary_mask.min(), binary_mask.max(), np.count_nonzero(binary_mask))
+                    current_mask = (binary_mask > 0).astype(np.uint8) * 255
+                    # print(current_mask.shape, current_mask.min(), current_mask.max(), np.count_nonzero(current_mask))
+
+                    # print('mask shape', current_mask.shape, 'should be 0 640') # 1 480 640
+                    data_dict[f'/prompts/masks/{cam_name}'].append(current_mask.squeeze(0))
+                if use_text:
+                    text = send_array_recv_text(current_input)
+                    data_dict['/prompts/text'].append(text)
+                if use_dual:
+                    binary_mask, text = send_array_recv_dual(current_input)
+                    current_mask = (binary_mask > 0).astype(np.uint8) * 255
+                    data_dict[f'/prompts/masks/{cam_name}'].append(current_mask.squeeze(0))
+                    data_dict['/prompts/text'].append(text)
+            elif cam_name == 'head_camera':
                 # print('image shape',current_image.shape) # 480 1280 3
                 current_input = current_image[:,:640].copy()
-                binary_mask = send_array_recv_mask(current_input)
-                # print(binary_mask.shape, binary_mask.min(), binary_mask.max(), np.count_nonzero(binary_mask))
-                current_mask = (binary_mask > 0).astype(np.uint8) * 255
-                # print(current_mask.shape, current_mask.min(), current_mask.max(), np.count_nonzero(current_mask))
+                if use_masks:
+                    binary_mask = send_array_recv_mask(current_input)
+                    # print(binary_mask.shape, binary_mask.min(), binary_mask.max(), np.count_nonzero(binary_mask))
+                    current_mask = (binary_mask > 0).astype(np.uint8) * 255
+                    # print(current_mask.shape, current_mask.min(), current_mask.max(), np.count_nonzero(current_mask))
 
-                # print('mask shape', current_mask.shape, 'should be 0 640') # 1 480 640
-                data_dict[f'/prompts/masks/{cam_name}'].append(current_mask.squeeze(0))
+                    # print('mask shape', current_mask.shape, 'should be 0 640') # 1 480 640
+                    data_dict[f'/prompts/masks/{cam_name}'].append(current_mask.squeeze(0))
+                if use_text:
+                    text = send_array_recv_text(current_input)
+                    data_dict['/prompts/text'].append(text)
+                if use_dual:
+                    binary_mask, text = send_array_recv_dual(current_input)
+                    current_mask = (binary_mask > 0).astype(np.uint8) * 255
+                    data_dict[f'/prompts/masks/{cam_name}'].append(current_mask.squeeze(0))
+                    data_dict['/prompts/text'].append(text)
             # data_dict[f'/observations/depth_images/{cam_name}'].append((image_recorder.get_depth_images())[cam_name])
             # print(f'{cam_name} size = {image_recorder.get_images()[cam_name].shape}')
         
@@ -330,11 +392,25 @@ def main(args):
             #         print('Error during depth image compression')
             data_dict[f'/observations/images/{cam_name}'] = compressed_list
             
-            if cam_name == 'head_camera':
+            if args['task_name'] == 'hanoi2' and cam_name == 'head_camera':
                 mask_list = data_dict[f'/prompts/masks/{cam_name}']
+                # mask_data_list = []
                 compressed_mask_list = []
                 compressed_mask_len.append([])
                 for mask in mask_list:
+                    # raw_bytes = mask.tobytes()
+                    # mask_data_list.append(raw_bytes)
+                    compressed = zlib.compress(mask.tobytes())
+                    compressed_mask_list.append(compressed)
+                    compressed_mask_len[-1].append(len(compressed))
+            elif cam_name == 'head_camera':
+                mask_list = data_dict[f'/prompts/masks/{cam_name}']
+                # mask_data_list = []
+                compressed_mask_list = []
+                compressed_mask_len.append([])
+                for mask in mask_list:
+                    # raw_bytes = mask.tobytes()
+                    # mask_data_list.append(raw_bytes)
                     compressed = zlib.compress(mask.tobytes())
                     compressed_mask_list.append(compressed)
                     compressed_mask_len[-1].append(len(compressed))
@@ -389,8 +465,10 @@ def main(args):
         actions = root.create_group('actions')
         rewards = root.create_group('rewards')
         labels = root.create_group('labels')
+        prompts = root.create_group('prompts')
         image = obs.create_group('images')
-        masks = obs.create_group('masks')
+        masks = prompts.create_group('masks')
+
         # depth = obs.create_group('depth_images')
         
         ### observations ###
@@ -405,14 +483,37 @@ def main(args):
                                          chunks=(1, 360, 1280, 3), )
                 # _ = depth.create_dataset(cam_name, (data_timesteps, 360, 1280), dtype='uint8',
                 #                         chunks=(1, 360, 1280, 1), )
-            if cam_name == 'head_camera':
-                # _ = masks.create_dataset(cam_name, (data_timesteps, padded_mask_size), dtype = 'uint8')
+                
+            if  args['task_name'] == 'hanoi2' and cam_name == 'head_camera':
                 vlen_uint8 = h5py.vlen_dtype(np.dtype('uint8'))
+                # raw_bytes_array = np.empty(len(mask_data_list), dtype=object)
+                # for i, raw_bytes in enumerate(mask_data_list):
+                #     raw_bytes_array[i] = np.frombuffer(raw_bytes, dtype=np.uint8)
+                # masks.create_dataset(cam_name, data=raw_bytes_array, dtype=vlen_uint8)
                 compressed_bytes_array = np.empty(len(compressed_mask_list), dtype=object)
                 for i, x in enumerate(compressed_mask_list):
                     compressed_bytes_array[i] = np.frombuffer(x, dtype=np.uint8)
-
                 masks.create_dataset(cam_name, data=compressed_bytes_array, dtype=vlen_uint8)
+            elif cam_name == 'head_camera':
+                vlen_uint8 = h5py.vlen_dtype(np.dtype('uint8'))
+                # raw_bytes_array = np.empty(len(mask_data_list), dtype=object)
+                # for i, raw_bytes in enumerate(mask_data_list):
+                #     raw_bytes_array[i] = np.frombuffer(raw_bytes, dtype=np.uint8)
+                # masks.create_dataset(cam_name, data=raw_bytes_array, dtype=vlen_uint8)
+                compressed_bytes_array = np.empty(len(compressed_mask_list), dtype=object)
+                for i, x in enumerate(compressed_mask_list):
+                    compressed_bytes_array[i] = np.frombuffer(x, dtype=np.uint8)
+                masks.create_dataset(cam_name, data=compressed_bytes_array, dtype=vlen_uint8)
+
+        if use_text or use_dual:
+            string_dt = h5py.string_dtype(encoding='utf-8')
+            root.create_dataset(
+                "/prompts/text",                 # full path
+                shape=(data_timesteps,),         # one string per timestep
+                dtype=string_dt
+            )
+            root["/prompts/text"][:] = np.array(data_dict['/prompts/text'], dtype=string_dt)
+                
         _ = obs.create_dataset('xpos', (data_timesteps, 3*num_robots))
         _ = obs.create_dataset('euler', (data_timesteps, 3*num_robots))
         _ = obs.create_dataset('gripper_pos', (data_timesteps, 1*num_robots))
@@ -427,7 +528,11 @@ def main(args):
         
         for name, array in data_dict.items():
             # Avoid rewriting head_camera mask — already written manually above
-            if name == '/observations/masks/head_camera':
+            if args['task_name'] == 'hanoi2' and name == 'head_camera':
+                continue
+            elif name == '/prompts/masks/head_camera':
+                continue
+            if name == '/prompts/text':
                 continue
             write_nested_dataset(root, name, array)            
             # root[name][...] = array
@@ -440,6 +545,7 @@ def main(args):
             # root['/compressed_depth_len'][...] = compressed_depth_len
 
     print(f'Saving: {time.time() - t0:.1f} secs')
+    print(f'{dataset_name} saved')
 
 def get_auto_index(dataset_dir, dataset_name_prefix = '', data_suffix = 'hdf5'):
     max_idx = 1000
@@ -455,5 +561,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='mask_demo', required=False)
     parser.add_argument('--episode_idx', action='store', type=int, help='Episode index.', default=None, required=False)
+    parser.add_argument('--use_text', action='store_true', help='Enable text prompt forwarding')
+    parser.add_argument('--use_masks', action='store_true', help='Enable mask forwarding')
+    parser.add_argument('--use_dual', action='store_true', help='Enable dual forwarding')
     main(vars(parser.parse_args())) # TODO
     # debug()

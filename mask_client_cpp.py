@@ -115,7 +115,7 @@ def main(args):
     # Parameters
     temporal_ensemble = True
     esb_k = 0.05
-    policy_update_period = 10 # tick, work without temporal ensemble
+    policy_update_period = 10000 # tick, work without temporal ensemble
     use_depth = False
     use_masks = True
     overwrite = False
@@ -148,7 +148,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_106500_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_120000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')

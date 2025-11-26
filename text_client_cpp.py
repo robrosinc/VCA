@@ -77,16 +77,29 @@ def send_array_recv_mask(array: np.ndarray, meta: dict = {}):
     array = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
     return array
 
+def send_array_recv_dual(array: np.ndarray, meta: dict = {}):
+    meta.update({'dtype': str(array.dtype), 'shape': array.shape})
+    socket.send_multipart([
+        json.dumps(meta).encode('utf-8'),
+        array.tobytes()
+    ])
+    meta_bytes, data_bytes = socket.recv_multipart()
+    meta = json.loads(meta_bytes.decode('utf-8'))
+    dtype = np.dtype(meta['dtype'])
+    shape = tuple(meta['shape'])
+    mask = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
+    text = meta['text']
+
+    return mask, text
+
 def send_array_recv_text(array: np.ndarray, meta: dict = {}):
     meta.update({'dtype': str(array.dtype), 'shape': array.shape})
     socket.send_multipart([
         json.dumps(meta).encode('utf-8'),
         array.tobytes()
     ])
-    response_bytes = socket.recv()
-    response_string = response_bytes.decode('utf-8')
-    response_data = json.loads(response_string)
-    return response_data.get("text", "")
+    payload = socket.recv_json()
+    return payload['text']
 
 current_pose_l = None
 current_pose_r = None
@@ -159,7 +172,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_113000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_120000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -552,6 +565,8 @@ def main(args):
 
                 # move data into GPU
                 cam_masks = None
+                input_ids_torch = None
+                attention_mask_torch = None
                 if use_gpu_for_inference:
                     if inference_batch == 1:
                         robot_obs_history_torch = torch.from_numpy(robot_obs_history_flat).float().cuda().unsqueeze(0)

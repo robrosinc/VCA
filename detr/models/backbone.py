@@ -208,6 +208,32 @@ class Resnet10(nn.Module):
         out = self.layer4(out)                  # (1, 512, 8, 20)
         return {"layer4": out}
 
+class Resnet18(nn.Module):
+    """
+    ResNet-18 encoder that:
+      - accepts 1-channel or 3-channel input (1-channel is auto-replicated to 3)
+      - returns a dict with {"layer4": tensor} for drop-in compatibility with your Joiner
+      - works with arbitrary HxW (>= ~32px) — no hard-coded downsampling to target sizes
+    """
+    def __init__(self, dilation: bool = False, pretrained: bool = False):
+        super().__init__()
+        # Build a torchvision resnet18 using the same FrozenBatchNorm2d as elsewhere in this file
+        self.backbone = torchvision.models.resnet18(
+            replace_stride_with_dilation=[False, False, dilation],
+            weights=("DEFAULT" if pretrained else None),
+            norm_layer=FrozenBatchNorm2d,
+        )
+        # Grab only layer4 outputs (same interface as your Resnet10 forward)
+        self.body = IntermediateLayerGetter(self.backbone, return_layers={"layer4": "layer4"})
+        self.out_channels = 512  # resnet18's layer4 has 512 channels
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # If caller gives grayscale (N,1,H,W), replicate to 3 channels.
+        if x.dim() == 4 and x.size(1) == 1:
+            x = x.repeat(1, 3, 1, 1)
+        # If inputs already 3-channel, just pass through. (Other channel counts are unsupported by resnet18.)
+        feats = self.body(x)  # {"layer4": tensor}
+        return feats
 
 def build_mask_backbone(args):
     position_embedding = build_position_encoding(args)

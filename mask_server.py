@@ -191,7 +191,6 @@ def send_mask(socket, array: np.ndarray, meta: dict={}):
         json.dumps(meta).encode('utf-8'),
         array.tobytes()
     ])
-    return array, meta
 
 def send_text_prompt(socket, text: str, frame_idx: int, class_id: int):
     payload = {"frame_idx": frame_idx, "class_id": class_id, "text": text}
