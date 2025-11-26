@@ -535,7 +535,7 @@ def get_norm_stats(dataset_path_list):
     all_state_data = []
     all_action_data = []
     all_episode_len = []
-    relative_inter_gripper_proprio = True
+    relative_inter_gripper_proprio = False
     relative_action_mode = False
     relative_obs_mode = False
 
