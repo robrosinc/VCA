@@ -121,8 +121,8 @@ def train(rank, world_size, args):
     name_filter = task_config.get("name_filter", lambda n: True)
 
     # fixed parameters
-    state_dim = 29
-    action_dim = 20
+    state_dim = 10
+    action_dim = 10
     lr_backbone = args["lr"]
     backbone = "resnet34"
     # backbone = "vit_b_16"
@@ -380,7 +380,7 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument(
-        "--seed", action="store", type=int, default=0, help="seed", required=True
+        "--seed", action="store", type=int, default=10, help="seed", required=True
     )
     parser.add_argument(
         "--num_steps",

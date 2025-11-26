@@ -10,7 +10,6 @@ from time import time
 from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
 import torchvision.transforms as transforms
 from scipy.spatial.transform import Rotation
-import zlib
 
 import IPython
 
@@ -67,7 +66,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
         self.relative_action_mode = False
         self.relative_obs_mode = False
-        self.relative_inter_gripper_proprio = True
+        self.relative_inter_gripper_proprio = False
 
         self.__getitem__(0)  # initialize self.is_sim and self.transformations
         self.is_sim = False
@@ -228,19 +227,19 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         root[f"/observations/images/{cam_name}"]
                     )[img_sampling]
                     if self.use_masks and cam_name == "head_camera":
-                        # if f"{cam_name}_masks" in root["/observations/masks"]:
-                        #     mask_dict[cam_name] = np.expand_dims(np.array(
-                        #         root[f"/observations/masks/{cam_name}_masks"]
-                        #     )[img_sampling][:,:,:640], axis=1)
-                        # elif cam_name in root["/observations/masks"]:
-                        #     unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
-                        #     decompressed_masks_unique = [
-                        #         np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
-                        #         for entry in unique_compressed
-                        #     ]
-                        #     decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
-                        #     mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
-                        if cam_name in root["/prompts/masks"]:
+                        if f"{cam_name}_masks" in root["/observations/masks"]:
+                            mask_dict[cam_name] = np.expand_dims(np.array(
+                                root[f"/observations/masks/{cam_name}_masks"]
+                            )[img_sampling][:,:,:640], axis=1)
+                        elif cam_name in root["/observations/masks"]:
+                            unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
+                            decompressed_masks_unique = [
+                                np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
+                                for entry in unique_compressed
+                            ]
+                            decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                            mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+                        elif cam_name in root["/prompts/masks"]:
                             # The data is already an uncompressed numpy array of shape (T, H, W)
                             uncompressed_masks = root[f"/prompts/masks/{cam_name}"][()]
                             

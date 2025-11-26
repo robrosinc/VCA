@@ -2,7 +2,7 @@ import pathlib
 import os
 
 ### Task parameters
-DATA_DIR = os.path.expanduser('/home/robros-ai/dg/IL_data/new')
+DATA_DIR = os.path.expanduser('/workspace/dataset')
 TASK_CONFIGS = {
     ### BLOCK SORT
     'dsr_block_collect':{
