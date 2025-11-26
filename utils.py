@@ -697,7 +697,7 @@ def get_norm_stats(dataset_path_list):
 def find_all_hdf5(dataset_dir, skip_mirrored_data):
     hdf5_files = []
     for root, dirs, files in os.walk(dataset_dir):
-        for filename in fnmatch.filter(files, "*.h5"):
+        for filename in fnmatch.filter(files, "*.hdf5"):
             if "features" in filename:
                 continue
             if skip_mirrored_data and "mirror" in filename:
