@@ -244,7 +244,7 @@ def train(rank, world_size, args):
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
-            project="blocksort-text",
+            project="hanoi-with-mask-200",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,
