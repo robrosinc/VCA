@@ -62,7 +62,7 @@ python train.py \
 --lr 1e-5
 
 # mask demo
-PYTHONWARNINGS=ignore torchrun --nproc_per_node=4 --master_port=12355 train.py --ckpt_dir ~/dataset/with_mask/checkpoint --policy_class ACT --task_name mask_demo --use_masks --save_every 20000 --batch_size 16 --seed 10 --num_steps 200000 --img_obs_size 2 --wandb --lr 1e-4
+PYTHONWARNINGS=ignore torchrun --nproc_per_node=4 --master_port=12355 train.py --ckpt_dir /workspace/checkpoints --policy_class ACT --task_name hanoi2 --use_masks --save_every 20000 --batch_size 16 --seed 10 --num_steps 200000 --img_obs_size 2 --wandb --lr 1e-4
 python train.py --ckpt_dir /mnt/ddrive/Downloads --policy_class ACT --task_name mask_demo --batch_size 8 --chunk_size 24 --robot_obs_size 2 --img_obs_size 2 --img_obs_every 20 --seed 10 --num_steps 100000 --lr 1e-4 --resume_ckpt_path /mnt/ddrive/Downloads/policy_step_23_seed_10.ckpt --wandb --validate_every 10000 --use_masks --save_every 1000
 python train.py --task_name=mask_demo --use_masks --ckpt_dir="/mnt/ddrive/Downloads/dataset" --resume_ckpt_path="/mnt/ddrive/Downloads/dataset/policy_step_2000_seed_10.ckpt" --save_every=1000  --policy_class="ACT" --batch_size=8 --seed=10 --num_steps=100000 --img_obs_size=2 --wandb
 

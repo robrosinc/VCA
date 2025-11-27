@@ -405,16 +405,25 @@ class EpisodicDataset(torch.utils.data.Dataset):
             all_cam_images = []
             for cam_name in self.camera_names:
                 if cam_name == 'head_camera':
-                    cropped_img = image_dict[cam_name][:,:,:640,:]
+                    cropped_img = image_dict[cam_name][:, :, :640, :]     # (T, 480, 640, 3)
+
+                    for t in range(len(cropped_img)):
+                        cropped_img[t][:, :320, :] = 0
+
+                    image_dict[cam_name] = cropped_img
+
+                elif cam_name == 'right_camera':
+
+                    resized_frames = []
                     for t in range(len(image_dict[cam_name])):
-                        img = cropped_img[t].copy()
-                        img[:, :320, :] = 0 
-                        image_dict[cam_name][t] = img # 480 640 3
-                        # image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(640, 480), interpolation=cv2.INTER_LINEAR)
-                # elif cam_name == 'right_camera':
-                #     cropped_img = image_dict[cam_name][:,:,:,:640]
-                #     for t in range(len(image_dict[cam_name])):
-                #         image_dict[cam_name][t] = cropped_img[t]
+                        resized = cv2.resize(
+                            image_dict[cam_name][t],
+                            dsize=(640, 480),
+                            interpolation=cv2.INTER_LINEAR
+                        )
+                        resized_frames.append(resized)
+
+                    image_dict[cam_name] = np.array(resized_frames)
 
                 all_cam_images.append(image_dict[cam_name])
 
