@@ -96,7 +96,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 except:
                     is_sim = False
 
-                compressed = root.attrs.get("compress", False)
+                compressed = "compressed_image_len" in root
 
                 num_robots = int(root["/actions/pose"].shape[1] / 6)
 
@@ -222,65 +222,54 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 img_sampling_np = np.array(img_sampling)
                 unique_indices, inverse_indices = np.unique(img_sampling_np, return_inverse=True)
 
-                for cam_name in self.camera_names:
-                    image_dict[cam_name] = np.array(
-                        root[f"/observations/images/{cam_name}"]
-                    )[img_sampling]
-                    if self.use_masks and cam_name == "head_camera":
-                        if f"{cam_name}_masks" in root["/observations/masks"]:
-                            mask_dict[cam_name] = np.expand_dims(np.array(
-                                root[f"/observations/masks/{cam_name}_masks"]
-                            )[img_sampling][:,:,:640], axis=1)
-                        elif cam_name in root["/observations/masks"]:
-                            unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
-                            decompressed_masks_unique = [
-                                np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
-                                for entry in unique_compressed
-                            ]
-                            decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
-                            mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
-                        elif cam_name in root["/prompts/masks"]:
-                            # The data is already an uncompressed numpy array of shape (T, H, W)
-                            uncompressed_masks = root[f"/prompts/masks/{cam_name}"][()]
-                            
-                            # Select the masks using the unique and inverse indices, similar to the original logic
-                            # This assumes uncompressed_masks has a shape of (T_total, H, W) where T_total is the total number of frames
-                            selected_masks_unique = uncompressed_masks[unique_indices]
-                            
-                            # Reorder the masks based on inverse_indices
-                            selected_masks = selected_masks_unique[inverse_indices]
-                            
-                            # Stack the masks and add a new dimension
-                            mask_dict[cam_name] = np.expand_dims(selected_masks, axis=1)
-                        else:
-                            raise KeyError("No valid mask dataset found for head_camera")
-                # print("here", mask_dict['head_camera'].shape) # 2 1 240 640
-                t3 = time()
                 if compressed:
-                    for cam_name in image_dict.keys():
-                        decompressed_image_array = []
-                        for i in range(len(image_dict[cam_name])):
-                            decompressed_image = cv2.imdecode(
-                                image_dict[cam_name][i], 1
-                            )
-                            # cv2.imshow('decoding', decompressed_image)
-                            # cv2.waitKey()
-                            decompressed_image_array.append(decompressed_image)
-                        image_dict[cam_name] = np.array(decompressed_image_array)
-                        # print('image_dict[cam_name].shape', image_dict[cam_name].shape)
-                t4 = time()
-
-                if self.use_masks:
-                    all_cam_masks = []
                     for cam_name in self.camera_names:
-                        if cam_name =='head_camera':
-                            cropped_mask = mask_dict[cam_name][:,:,:,:640]
-                            for t in range(len(mask_dict[cam_name])):
-                                mask_dict[cam_name][t] = cropped_mask[t]
-                            all_cam_masks.append(mask_dict[cam_name])
-                    all_cam_masks = np.stack(all_cam_masks, axis=0)
-                    # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 240 640
-                    mask_data = torch.from_numpy(all_cam_masks).float()
+                        compressed_imgs = np.array(root[f"/observations/images/{cam_name}"])[img_sampling]
+
+                        decompressed = []
+                        for encoded in compressed_imgs:
+                            decompressed.append(cv2.imdecode(encoded, cv2.IMREAD_COLOR))
+                        image_dict[cam_name] = np.array(decompressed) # k H W C
+                    
+                if self.use_masks:
+                    cam_name = "head_camera"  # only one camera needs masks
+
+                    if f"{cam_name}" not in root["/prompts/masks"]:
+                        raise KeyError(f"/prompts/masks/{cam_name} does not exist in the file.")
+
+                    compressed_masks_all = root[f"/prompts/masks/{cam_name}"][()]  # list of zlib bytes
+
+                    # Select using unique_indices → reorder with inverse_indices
+                    compressed_masks_unique = compressed_masks_all[unique_indices]
+
+                    # Decompress
+                    decompressed_unique = [
+                        np.frombuffer(zlib.decompress(blob), dtype=np.uint8).reshape(480, 640)
+                        for blob in compressed_masks_unique
+                    ]
+
+                    # Reorder to match the sampled image order
+                    decompressed_masks = []
+                    for i in inverse_indices:
+                        m = decompressed_unique[i].copy()
+                        m[:, :320] = 0       # zero-out left region here
+                        decompressed_masks.append(m)
+
+                    # Final mask: (T, 1, H, W)
+                    mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+
+                    print("here", mask_dict['head_camera'].shape) # 2 1 480 640
+
+                    # all_cam_masks = []
+                    # for cam_name in self.camera_names:
+                    #     if cam_name =='head_camera':
+                    #         cropped_mask = mask_dict[cam_name][:,:,:,320:640]
+                    #         for t in range(len(mask_dict[cam_name])):
+                    #             mask_dict[cam_name][t] = cropped_mask[t]
+                    #         all_cam_masks.append(mask_dict[cam_name])
+                    # all_cam_masks = np.stack(all_cam_masks, axis=0)
+                    # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 480 640
+                    mask_data = torch.from_numpy(mask_dict['head_camera']).float()
                     mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
                 else:
                     # Provide a placeholder tensor if masks are not used
@@ -412,14 +401,20 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 padded_robot_state = padded_robot_state[: self.robot_obs_size]  # discard the last trash data
 
             t6 = time()
-            # new axis for different cameras
+            # cropping optional
             all_cam_images = []
             for cam_name in self.camera_names:
-                # crop and resize head img
-                # if cam_name == 'head_camera':
-                #     cropped_img = image_dict[cam_name][:, 140:-100, :] # crop height
+                if cam_name == 'head_camera':
+                    cropped_img = image_dict[cam_name][:,:,:640,:]
+                    for t in range(len(image_dict[cam_name])):
+                        img = cropped_img[t].copy()
+                        img[:, :320, :] = 0 
+                        image_dict[cam_name][t] = img # 480 640 3
+                        # image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(640, 480), interpolation=cv2.INTER_LINEAR)
+                # elif cam_name == 'right_camera':
+                #     cropped_img = image_dict[cam_name][:,:,:,:640]
                 #     for t in range(len(image_dict[cam_name])):
-                #         image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(1280, 480), interpolation=cv2.INTER_LINEAR)
+                #         image_dict[cam_name][t] = cropped_img[t]
 
                 all_cam_images.append(image_dict[cam_name])
 

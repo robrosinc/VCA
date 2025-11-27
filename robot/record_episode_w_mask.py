@@ -479,8 +479,8 @@ def main(args):
                 # _ = depth.create_dataset(cam_name, (data_timesteps, padded_size2), dtype='uint8',
                 #                          chunks=(1, padded_size2), )
             else:
-                _ = image.create_dataset(cam_name, (data_timesteps, 360, 1280, 3), dtype='uint8',
-                                         chunks=(1, 360, 1280, 3), )
+                _ = image.create_dataset(cam_name, (data_timesteps, 480, 1280, 3), dtype='uint8',
+                                         chunks=(1, 480, 1280, 3), )
                 # _ = depth.create_dataset(cam_name, (data_timesteps, 360, 1280), dtype='uint8',
                 #                         chunks=(1, 360, 1280, 1), )
                 
