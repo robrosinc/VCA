@@ -258,7 +258,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     # Final mask: (T, 1, H, W)
                     mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
 
-                    print("here", mask_dict['head_camera'].shape) # 2 1 480 640
+                    # print("here", mask_dict['head_camera'].shape) # 2 1 480 640
 
                     # all_cam_masks = []
                     # for cam_name in self.camera_names:
@@ -406,28 +406,28 @@ class EpisodicDataset(torch.utils.data.Dataset):
             for cam_name in self.camera_names:
                 if cam_name == 'head_camera':
                     cropped_img = image_dict[cam_name][:, :, :640, :]     # (T, 480, 640, 3)
-                    print("1",cropped_img.shape)
+                    # print("1",cropped_img.shape)
 
                     for t in range(len(cropped_img)):
                         cropped_img[t][:, :320, :] = 0
 
                     image_dict[cam_name] = np.stack(cropped_img, axis=0)
-                    print("2",image_dict[cam_name].shape)
+                    # print("2",image_dict[cam_name].shape)
 
                 elif cam_name == 'rhand_camera':
                     resized_frames = []
                     for t in range(len(image_dict[cam_name])):
-                        if t==1:
-                            print("3",image_dict[cam_name][t].shape)
+                        # if t==1:
+                            # print("3",image_dict[cam_name][t].shape)
                         resized = cv2.resize(
                             image_dict[cam_name][t],
                             dsize=(640, 480),
                             interpolation=cv2.INTER_LINEAR
                         )
                         resized_frames.append(resized)
-                    print("4",resized_frames[0].shape)
+                    # print("4",resized_frames[0].shape)
                     image_dict[cam_name] = np.stack(resized_frames, axis=0)
-                    print("5",image_dict[cam_name].shape)
+                    # print("5",image_dict[cam_name].shape)
 
                 all_cam_images.append(image_dict[cam_name])
 
