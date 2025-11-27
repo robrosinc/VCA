@@ -414,7 +414,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     image_dict[cam_name] = np.stack(cropped_img, axis=0)
                     print("2",image_dict[cam_name].shape)
 
-                elif cam_name == 'right_camera':
+                elif cam_name == 'rhand_camera':
                     resized_frames = []
                     for t in range(len(image_dict[cam_name])):
                         if t==1:
