@@ -413,7 +413,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     image_dict[cam_name] = cropped_img
 
                 elif cam_name == 'right_camera':
-
                     resized_frames = []
                     for t in range(len(image_dict[cam_name])):
                         resized = cv2.resize(
@@ -423,7 +422,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         )
                         resized_frames.append(resized)
 
-                    image_dict[cam_name] = np.array(resized_frames)
+                    image_dict[cam_name] = np.stack(resized_frames, axis=0)
 
                 all_cam_images.append(image_dict[cam_name])
 
