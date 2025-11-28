@@ -257,7 +257,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
                     # Final mask: (T, 1, H, W)
                     mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
-
+                    # print("Mask unique values:", np.unique(mask_dict['head_camera']))
                     # print("here", mask_dict['head_camera'].shape) # 2 1 480 640
 
                     # all_cam_masks = []
@@ -269,8 +269,12 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     #         all_cam_masks.append(mask_dict[cam_name])
                     # all_cam_masks = np.stack(all_cam_masks, axis=0)
                     # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 480 640
-                    mask_data = torch.from_numpy(mask_dict['head_camera']).float()
+                    mask_np = mask_dict['head_camera']         
+                    mask_np = np.expand_dims(mask_np, axis=0)  
+                    mask_data = torch.from_numpy(mask_np)      
                     mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
+                    mask_data = mask_data.float()
+                    mask_data = mask_data / 255.0  
                 else:
                     # Provide a placeholder tensor if masks are not used
                     mask_data = 0
