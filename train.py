@@ -7,11 +7,9 @@ from copy import deepcopy
 from itertools import repeat
 import logging
 from tqdm import tqdm
-from einops import rearrange
 import wandb
 import time
 import torchvision.transforms.v2 as transforms
-import GPUtil
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
