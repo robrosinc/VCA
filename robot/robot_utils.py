@@ -1,6 +1,6 @@
 import numpy as np
 import time
-
+import cv2
 class ImageRecorder:
     def __init__(self, camera_names, init_node=False, is_debug=False):
         import rospy

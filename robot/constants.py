@@ -2,7 +2,8 @@ import pathlib
 import os
 
 ### Task parameters
-DATA_DIR = os.path.expanduser('/workspace/dataset')
+# DATA_DIR = os.path.expanduser('/workspace/dataset')
+DATA_DIR = os.path.expanduser('~/dg/IL_data/new/hanoi')
 TASK_CONFIGS = {
     ### BLOCK SORT
     'dsr_block_collect':{
@@ -68,7 +69,7 @@ TASK_CONFIGS = {
     },
     'hanoi2':{
         'dataset_dir': DATA_DIR,
-        'episode_len': 1400,
+        'episode_len': 5000,
         'train_ratio': 0.99,
         'camera_names': ['rhand_camera', 'head_camera'],
         'robot_id_list': ['dsr_r'],

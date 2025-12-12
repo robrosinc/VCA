@@ -13,8 +13,8 @@ from external.tamapp.efficient_track_anything.build_efficienttam import build_ef
 app = Flask(__name__)
 
 # ------------------- Predictor Init -------------------
-tam_checkpoint = "external/tamapp/checkpoints/efficienttam_ti.pt"
-model_cfg = "configs/efficienttam/efficienttam_ti.yaml"
+tam_checkpoint = "external/tamapp/checkpoints/efficienttam_ti_512x512.pt"
+model_cfg = "configs/efficienttam/efficienttam_ti_512x512.yaml"
 predictor = build_efficienttam_camera_predictor(model_cfg, tam_checkpoint)
 
 classes = [0, 1, 2, 3]

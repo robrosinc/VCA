@@ -385,6 +385,6 @@ class gripperControl:
     
 
 if __name__ == "__main__":
-    gripper_control = gripperControl(robot_id_list = ['dsr_l', 'dsr_r'], hz=20, init_node=True, teleop=True)
-    # gripper_control = gripperControl(robot_id_list = ['dsr_r'], hz=20, init_node=True, teleop=True)
+    # gripper_control = gripperControl(robot_id_list = ['dsr_l', 'dsr_r'], hz=20, init_node=True, teleop=True)
+    gripper_control = gripperControl(robot_id_list = ['dsr_r'], hz=20, init_node=True, teleop=True)
     gripper_control.control_thread_start()

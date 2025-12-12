@@ -117,14 +117,14 @@ def main(args):
     use_rotm6d = True
     img_downsampling = True
     img_downsampling_size = (240, 640) #(640, 180) or (640, 240)
-    use_inter_gripper_proprio_input = True
+    use_inter_gripper_proprio_input = False
     use_gpu_for_inference = True
     
     inference_batch = 1
 
     ### Experiment Parameters
-    dsr_pose_action_skip = 11
-    gripper_action_skip = 11
+    dsr_pose_action_skip = 5
+    gripper_action_skip = 5
     record_snapshot = True
     img_name = 'test'
     
@@ -140,13 +140,13 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_120000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_100000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
     with open(config_path, 'rb') as f:
         config = pickle.load(f)
-        print('config: \n', config)
+        # print('config: \n', config)
     policy_class = config['policy_class']
     policy_config = config['policy_config']
     policy = make_policy(policy_class, policy_config)
@@ -321,21 +321,23 @@ def main(args):
         # cv2.imshow('first_image', first_image_for_show)
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
-            # cropped_first_image = first_image[140:-100,:,:].copy()
+            cropped_first_image = first_image[:,:640,:].copy()
+            
             if use_masks:
-                first_input = first_image[:,:640].copy()
-                binary_mask = send_array_recv_mask(first_input)
-                first_mask = (binary_mask > 0).astype(np.float32) * 255
-                if img_downsampling:
-                    # first_mask = cv2.resize(first_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
-                    first_mask = first_mask[0][np.newaxis, :, :]
+                binary_mask = send_array_recv_mask(cropped_first_image)
+                first_mask = (binary_mask > 0).astype(np.float32)
+                first_mask[:,:,:320] = 0
                 # print("first_mask", first_mask.shape)
-                mask_obs_history[cam_name] = np.repeat(first_mask[np.newaxis, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
-                mask_obs_history['head_camera'][0] = first_mask
-                # print("next value", mask_obs_history["head_camera"].shape)
-            # first_image = cv2.resize(cropped_first_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
-        first_image = rearrange(first_image, 'h w c -> c h w')
+                mask_obs_history[cam_name] = np.repeat(first_mask[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0)
+                # print("next value", mask_obs_history["head_camera"].shape) # should be 2 1 480 640
+            
+            cropped_first_image[:,:320,:] = 0
+            first_image = cropped_first_image
+        if cam_name == 'rhand_camera':
+            first_image = first_image[:,:640,:]
+            # first_image = cv2.resize(first_image, dsize=(640,480), interpolation=cv2.INTER_LINEAR)
 
+        first_image = rearrange(first_image, 'h w c -> c h w')
         image_obs_history[cam_name] = np.repeat(first_image[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0) #0xxx0xxx0
         if use_depth:
             first_depth = np.array([image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name], image_recorder.get_depth_images()[cam_name]])
@@ -445,26 +447,24 @@ def main(args):
                     current_image = image_recorder.get_images()[cam_name]
 
                     if cam_name == 'head_camera':
-                        # cropped_image = current_image[140:-100,:,:].copy()
+                        cropped_image = current_image[:,:640].copy()
                         if use_masks:
-                            current_input = current_image[:,:640].copy()
-                            binary_mask = send_array_recv_mask(current_input)
-                            current_mask = (binary_mask > 0).astype(np.float32) * 255
-                            # current_mask = np.expand_dims(binary_mask, axis=0) # channel dim
-                            if img_downsampling:
-                                # binary_mask = cv2.resize(binary_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
-                                current_mask = current_mask[0][np.newaxis, :, :]
-                            # print("head_cam_mask", binary_mask.shape)
+                            binary_mask = send_array_recv_mask(cropped_image)
+                            # print("head_cam_mask", binary_mask.shape) # 1 480 640
+                            current_mask = (binary_mask > 0).astype(np.float32)
+                            current_mask[:,:,:320] = 0
                             if num_image_obs >1:
                                 mask_obs_history[cam_name][1:] =  mask_obs_history[cam_name][:-1]
                                 mask_obs_history[cam_name][0] = current_mask
                             else:
                                 mask_obs_history[cam_name][0] = current_mask
-                        # current_image = cv2.resize(cropped_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
+                        cropped_image[:,:320,:] = 0
+                        current_image = cropped_image
+                    if cam_name == 'rhand_camera':
+                        # current_image = cv2.resize(current_image, dsize=(640,480), interpolation=cv2.INTER_LINEAR)
+                        current_image = current_image[:,:640]
 
-                    # current_image = rearrange(image_recorder.get_images()[cam_name], 'h w c -> c h w')
                     current_image = rearrange(current_image, 'h w c -> c h w')
-
 
                     if num_image_obs >1:
                         image_obs_history[cam_name][1:] =  image_obs_history[cam_name][:-1]
@@ -479,7 +479,7 @@ def main(args):
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
                 # print("all cam", all_cam_images.shape)
-                # print('mask_obs_history', mask_obs_history['head_camera'].shape)
+                # print('mask_obs_history', mask_obs_history['head_camera'].shape) # obs_skip 1 480 640
                 if use_masks:
                     all_cam_masks = []
                     for cam_name in camera_names:
@@ -507,38 +507,27 @@ def main(args):
                         cam_masks = torch.from_numpy(all_cam_masks).float().cpu().unsqueeze(0)
                 # print("image", cam_images.shape, "masks", cam_masks.shape)
                 
-                # if img_downsampling:
-                #     transformations = [
-                #         # transforms.RandomRotation(degrees=[-5.0, 5.0], expand=False),
-                #         # transforms.RandomCrop(size=[int(original_size[0] * ratio), int(original_size[1]/2 * ratio)]),
-                #         transforms.Resize(size=img_downsampling_size),
-                #         transforms.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5, hue=0.08),
-                #     ]
-                #     for transform in transformations:
-                #         cam_images = transform(cam_images)
-                #     cam_masks = transforms.Resize(size=img_downsampling_size)(cam_masks)
-                
+                trans = transforms.Compose([
+                    transforms.Resize(img_downsampling_size),
+                    # transforms.ColorJitter(
+                    #     brightness=0.3,
+                    #     contrast=0.4,
+                    #     saturation=0.5,
+                    #     hue=0.08
+                    # )
+                ])
+
                 
                 if img_downsampling:
-                    # color_jitter = transforms.ColorJitter(brightness=0.3,contrast=0.4,saturation=0.5,hue=0.08)
-
-                    # # Apply ColorJitter per image (expects [C, H, W] inputs)
-                    # cam_images = torch.stack([color_jitter(img) for img in cam_images])
-
                     # Resize cam_images: shape [B, C, H, W]
                     target_h, target_w = img_downsampling_size
+                    
                     B, K, T, C, H, W = cam_images.shape
-                    cam_images = cam_images.view(B * K * T, C, H, W)
-
-                    cam_images = F.interpolate(
-                        cam_images,
-                        size=(target_h, target_w),  # New H, W
-                        mode='bilinear',
-                        align_corners=False
-                    )
-
-                    # Restore original shape
-                    cam_images = cam_images.view(B, K, T, C, target_h, target_w)
+                    flat_images = cam_images.reshape(B * K * T, C, H, W)
+                    
+                    flat_images = torch.stack([trans(img) for img in flat_images], dim=0)
+                    cam_images = flat_images.reshape(B, K, T, C, target_h, target_w)
+                    
                     B, K, T, C, H, W = cam_masks.shape
                     cam_masks = cam_masks.view(B * K * T, C, H, W)
 
@@ -555,8 +544,8 @@ def main(args):
 
                 t2 = time.time()
                 # policy inference
-                # print("shape", cam_images.shape, cam_masks.shape) # [1,3,2,3,240,640] [2,1,240,640]
-                all_actions = policy(robot_obs_history_torch, cam_images, cam_masks) # action dim: [1, chunk_size, action_dim]
+                # print("shape", cam_images.shape, cam_masks.shape) # [1,3,2,3,240,640] [1,1,2,1,240,640]
+                all_actions = policy(robot_obs_history_torch, cam_images, masks = cam_masks) # action dim: [1, chunk_size, action_dim]
                 t3 = time.time()
                 all_actions = all_actions.cpu().numpy()
                 all_actions = all_actions[0]
@@ -682,7 +671,7 @@ def main(args):
         pose_msg_r.header.stamp = rospy.Time.now()
         pose_msg_r.header.frame_id = "base_link"
 
-        # Left arm
+        # Right arm
         pos_r = dsr_desired_pose[0:3]
         action_rotation = Rotation.from_euler("ZYZ", dsr_desired_pose[3:6], degrees=True)
         quat_r = action_rotation.as_quat()
@@ -788,6 +777,6 @@ def rot6d2quat(rot6d):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_dir', action='store', type=str, help='Check Point Directory.', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='mask_demo', required=False)
+    parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='hanoi2', required=False)
     # parser.add_argument('--use_masks', action='store_true')
     main(vars(parser.parse_args()))

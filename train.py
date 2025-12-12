@@ -3,7 +3,6 @@ import numpy as np
 import os
 import pickle
 import argparse
-import matplotlib.pyplot as plt
 from copy import deepcopy
 from itertools import repeat
 import logging

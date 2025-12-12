@@ -421,13 +421,12 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 elif cam_name == 'rhand_camera':
                     resized_frames = []
                     for t in range(len(image_dict[cam_name])):
-                        # if t==1:
-                            # print("3",image_dict[cam_name][t].shape)
-                        resized = cv2.resize(
-                            image_dict[cam_name][t],
-                            dsize=(640, 480),
-                            interpolation=cv2.INTER_LINEAR
-                        )
+                        resized = image_dict[cam_name][t][:,:640,:]
+                        # resized = cv2.resize(
+                        #     image_dict[cam_name][t],
+                        #     dsize=(640, 480),
+                        #     interpolation=cv2.INTER_LINEAR
+                        # )
                         resized_frames.append(resized)
                     # print("4",resized_frames[0].shape)
                     image_dict[cam_name] = np.stack(resized_frames, axis=0)
@@ -869,7 +868,7 @@ def load_data(
         batch_size=batch_size_train,
         sampler=train_sampler,
         pin_memory=True,
-        num_workers=8,
+        num_workers=16,
         prefetch_factor=2,
         persistent_workers=True, 
     )
@@ -878,7 +877,7 @@ def load_data(
         batch_size=batch_size_val,
         sampler=val_sampler,
         pin_memory=True,
-        num_workers=8,
+        num_workers=16,
         prefetch_factor=2,
         persistent_workers=True, 
     )
