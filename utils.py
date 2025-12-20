@@ -228,33 +228,34 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         root[f"/observations/images/{cam_name}"]
                     )[img_sampling]
                     if self.use_masks and cam_name == "head_camera":
-                        # if f"{cam_name}_masks" in root["/observations/masks"]:
-                        #     mask_dict[cam_name] = np.expand_dims(np.array(
-                        #         root[f"/observations/masks/{cam_name}_masks"]
-                        #     )[img_sampling][:,:,:640], axis=1)
-                        # elif cam_name in root["/observations/masks"]:
-                        #     unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
-                        #     decompressed_masks_unique = [
-                        #         np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
-                        #         for entry in unique_compressed
-                        #     ]
-                        #     decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
-                        #     mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
-                        if cam_name in root["/prompts/masks"]:
-                            # The data is already an uncompressed numpy array of shape (T, H, W)
-                            uncompressed_masks = root[f"/prompts/masks/{cam_name}"][()]
-                            
-                            # Select the masks using the unique and inverse indices, similar to the original logic
-                            # This assumes uncompressed_masks has a shape of (T_total, H, W) where T_total is the total number of frames
-                            selected_masks_unique = uncompressed_masks[unique_indices]
-                            
-                            # Reorder the masks based on inverse_indices
-                            selected_masks = selected_masks_unique[inverse_indices]
-                            
-                            # Stack the masks and add a new dimension
-                            mask_dict[cam_name] = np.expand_dims(selected_masks, axis=1)
+                        if f"{cam_name}_masks" in root["/observations/masks"]:
+                            mask_dict[cam_name] = np.expand_dims(np.array(
+                                root[f"/observations/masks/{cam_name}_masks"]
+                            )[img_sampling][:,:,:640], axis=1)
+                        elif cam_name in root["/observations/masks"]:
+                            unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
+                            decompressed_masks_unique = [
+                                np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
+                                for entry in unique_compressed
+                            ]
+                            decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                            mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
                         else:
-                            raise KeyError("No valid mask dataset found for head_camera")
+                            if cam_name in root["/prompts/masks"]:
+                                # The data is already an uncompressed numpy array of shape (T, H, W)
+                                uncompressed_masks = root[f"/prompts/masks/{cam_name}"][()]
+                                
+                                # Select the masks using the unique and inverse indices, similar to the original logic
+                                # This assumes uncompressed_masks has a shape of (T_total, H, W) where T_total is the total number of frames
+                                selected_masks_unique = uncompressed_masks[unique_indices]
+                                
+                                # Reorder the masks based on inverse_indices
+                                selected_masks = selected_masks_unique[inverse_indices]
+                                
+                                # Stack the masks and add a new dimension
+                                mask_dict[cam_name] = np.expand_dims(selected_masks, axis=1)
+                            else:
+                                raise KeyError("No valid mask dataset found for head_camera")
                 # print("here", mask_dict['head_camera'].shape) # 2 1 240 640
                 t3 = time()
                 if compressed:
@@ -417,10 +418,11 @@ class EpisodicDataset(torch.utils.data.Dataset):
             all_cam_images = []
             for cam_name in self.camera_names:
                 # crop and resize head img
-                # if cam_name == 'head_camera':
-                #     cropped_img = image_dict[cam_name][:, 140:-100, :] # crop height
-                #     for t in range(len(image_dict[cam_name])):
-                #         image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=(1280, 480), interpolation=cv2.INTER_LINEAR)
+                if cam_name == 'head_camera':
+                    cropped_img = image_dict[cam_name][:, :, :640] # crop width
+                    
+                for t in range(len(image_dict[cam_name])):
+                    image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=self.img_downsample_size, interpolation=cv2.INTER_LINEAR)
 
                 all_cam_images.append(image_dict[cam_name])
 
@@ -460,7 +462,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 self.transformations = [
                     # transforms.RandomRotation(degrees=[-5.0, 5.0], expand=False),
                     # transforms.RandomCrop(size=[int(original_size[0] * ratio), int(original_size[1]/2 * ratio)]),
-                    transforms.v2.Resize(size=self.img_downsample_size),
+                    # transforms.v2.Resize(size=self.img_downsample_size),
                     transforms.v2.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5, hue=0.08),
                 ]
 

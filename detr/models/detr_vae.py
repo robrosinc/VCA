@@ -2,7 +2,6 @@
 """
 DETR model and criterion classes.
 """
-from matplotlib import text
 import torch
 from torch import nn
 from torch.autograd import Variable

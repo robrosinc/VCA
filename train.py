@@ -3,16 +3,13 @@ import numpy as np
 import os
 import pickle
 import argparse
-import matplotlib.pyplot as plt
 from copy import deepcopy
 from itertools import repeat
 import logging
 from tqdm import tqdm
-from einops import rearrange
 import wandb
 import time
 import torchvision.transforms.v2 as transforms
-import GPUtil
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
@@ -244,7 +241,7 @@ def train(rank, world_size, args):
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
-            project="blocksort-text",
+            project="blocksort-headmono",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,
