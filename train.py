@@ -22,7 +22,6 @@ from robot.constants import HZ
 from utils import load_data  # data functions
 from utils import compute_dict_mean, set_seed  # helper functions
 from policy import ACTPolicy, CNNMLPPolicy, DiffusionPolicy
-from visualize_episodes import save_videos
 
 from detr.models.latent_model import Latent_Model_Transformer
 from robot.constants import TASK_CONFIGS

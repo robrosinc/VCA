@@ -44,7 +44,7 @@ TASK_CONFIGS = {
         # 'sample_weights': [3,1],
     },
     'mask_demo':{
-        'dataset_dir': DATA_DIR + '/dsr_block_sort_with_mask',
+        'dataset_dir': DATA_DIR ,
         'episode_len': 5000,
         'train_ratio': 0.99,
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],

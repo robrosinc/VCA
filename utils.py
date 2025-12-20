@@ -228,18 +228,19 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         root[f"/observations/images/{cam_name}"]
                     )[img_sampling]
                     if self.use_masks and cam_name == "head_camera":
-                        if f"{cam_name}_masks" in root["/observations/masks"]:
-                            mask_dict[cam_name] = np.expand_dims(np.array(
-                                root[f"/observations/masks/{cam_name}_masks"]
-                            )[img_sampling][:,:,:640], axis=1)
-                        elif cam_name in root["/observations/masks"]:
-                            unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
-                            decompressed_masks_unique = [
-                                np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
-                                for entry in unique_compressed
-                            ]
-                            decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
-                            mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+                        if "/observations/masks" in root: 
+                            if f"{cam_name}_masks" in root["/observations/masks"]:
+                                mask_dict[cam_name] = np.expand_dims(np.array(
+                                    root[f"/observations/masks/{cam_name}_masks"]
+                                )[img_sampling][:,:,:640], axis=1)
+                            elif cam_name in root["/observations/masks"]:
+                                unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
+                                decompressed_masks_unique = [
+                                    np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
+                                    for entry in unique_compressed
+                                ]
+                                decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                                mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
                         else:
                             if cam_name in root["/prompts/masks"]:
                                 # The data is already an uncompressed numpy array of shape (T, H, W)
@@ -421,8 +422,11 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 if cam_name == 'head_camera':
                     cropped_img = image_dict[cam_name][:, :, :640] # crop width
                     
-                for t in range(len(image_dict[cam_name])):
-                    image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=self.img_downsample_size, interpolation=cv2.INTER_LINEAR)
+                    for t in range(len(image_dict[cam_name])):
+                        image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=self.img_downsample_size, interpolation=cv2.INTER_LINEAR)
+                else:
+                    for t in range(len(image_dict[cam_name])):
+                        image_dict[cam_name][t] = cv2.resize(image_dict[cam_name][:, :, :640][t], dsize=self.img_downsample_size, interpolation=cv2.INTER_LINEAR)
 
                 all_cam_images.append(image_dict[cam_name])
 
