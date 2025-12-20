@@ -109,7 +109,7 @@ def main(args):
     esb_k = 0.05
     policy_update_period = 10000 # tick, work without temporal ensemble
     use_depth = False
-    use_masks = True
+    use_masks = args['use_masks']
     overwrite = False
     relative_obs_mode = False
     relative_action_mode = False
@@ -123,8 +123,8 @@ def main(args):
     inference_batch = 1
 
     ### Experiment Parameters
-    dsr_pose_action_skip = 5
-    gripper_action_skip = 5
+    dsr_pose_action_skip = 8
+    gripper_action_skip = 8
     record_snapshot = True
     img_name = 'test'
     
@@ -140,7 +140,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_100000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_200000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -527,19 +527,19 @@ def main(args):
                     
                     flat_images = torch.stack([trans(img) for img in flat_images], dim=0)
                     cam_images = flat_images.reshape(B, K, T, C, target_h, target_w)
-                    
-                    B, K, T, C, H, W = cam_masks.shape
-                    cam_masks = cam_masks.view(B * K * T, C, H, W)
+                    if use_masks:
+                        B, K, T, C, H, W = cam_masks.shape
+                        cam_masks = cam_masks.view(B * K * T, C, H, W)
 
-                    cam_masks = F.interpolate(
-                        cam_masks,
-                        size=(target_h, target_w),  # New H, W
-                        mode='bilinear',
-                        align_corners=False
-                    )
+                        cam_masks = F.interpolate(
+                            cam_masks,
+                            size=(target_h, target_w),  # New H, W
+                            mode='bilinear',
+                            align_corners=False
+                        )
 
-                    # Restore original shape
-                    cam_masks = cam_masks.view(B, K, T, C, target_h, target_w)
+                        # Restore original shape
+                        cam_masks = cam_masks.view(B, K, T, C, target_h, target_w)
 
 
                 t2 = time.time()
@@ -778,5 +778,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_dir', action='store', type=str, help='Check Point Directory.', required=True)
     parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='hanoi2', required=False)
-    # parser.add_argument('--use_masks', action='store_true')
+    parser.add_argument('--use_masks', action='store_true')
     main(vars(parser.parse_args()))
