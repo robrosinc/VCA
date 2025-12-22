@@ -228,7 +228,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                         root[f"/observations/images/{cam_name}"]
                     )[img_sampling]
                     if self.use_masks and cam_name == "head_camera":
-                        if "/observations/masks" in root: 
+                        if "/observations/masks" in root:
                             if f"{cam_name}_masks" in root["/observations/masks"]:
                                 mask_dict[cam_name] = np.expand_dims(np.array(
                                     root[f"/observations/masks/{cam_name}_masks"]
@@ -257,6 +257,14 @@ class EpisodicDataset(torch.utils.data.Dataset):
                                 mask_dict[cam_name] = np.expand_dims(selected_masks, axis=1)
                             else:
                                 raise KeyError("No valid mask dataset found for head_camera")
+                        resized_masks = []
+                        for mask in mask_dict[cam_name]:
+                            resized_mask = cv2.resize(mask[0], (self.img_downsample_size[1], self.img_downsample_size[0]), interpolation=cv2.INTER_LINEAR)
+                            resized_masks.append(resized_mask)
+            
+                        # Stack the resized masks and add a new dimension
+                        mask_dict[cam_name] = np.expand_dims(np.stack(resized_masks, axis=0), axis=1)
+
                 # print("here", mask_dict['head_camera'].shape) # 2 1 240 640
                 t3 = time()
                 if compressed:
@@ -284,7 +292,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     all_cam_masks = np.stack(all_cam_masks, axis=0)
                     # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 240 640
                     mask_data = torch.from_numpy(all_cam_masks).float()
-                    mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
+                    # mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
                 else:
                     # Provide a placeholder tensor if masks are not used
                     mask_data = 0
@@ -418,16 +426,27 @@ class EpisodicDataset(torch.utils.data.Dataset):
             # new axis for different cameras
             all_cam_images = []
             for cam_name in self.camera_names:
-                # crop and resize head img
                 if cam_name == 'head_camera':
-                    cropped_img = image_dict[cam_name][:, :, :640] # crop width
-                    
+                    resized_frames = []
                     for t in range(len(image_dict[cam_name])):
-                        image_dict[cam_name][t] = cv2.resize(cropped_img[t], dsize=self.img_downsample_size, interpolation=cv2.INTER_LINEAR)
-                else:
-                    for t in range(len(image_dict[cam_name])):
-                        image_dict[cam_name][t] = cv2.resize(image_dict[cam_name][:, :, :640][t], dsize=self.img_downsample_size, interpolation=cv2.INTER_LINEAR)
+                        resized = cv2.resize(image_dict[cam_name][t][:,:640,:], (self.img_downsample_size[1], self.img_downsample_size[0]), interpolation=cv2.INTER_LINEAR)
+                        resized_frames.append(resized)
 
+                    image_dict[cam_name] = np.stack(resized_frames, axis=0)
+                    # print("2",image_dict[cam_name].shape)
+
+                else:
+                    resized_frames = []
+                    for t in range(len(image_dict[cam_name])):
+                        resized = cv2.resize(
+                            image_dict[cam_name][t],
+                            (self.img_downsample_size[1], self.img_downsample_size[0]),
+                            interpolation=cv2.INTER_LINEAR
+                        )
+                        resized_frames.append(resized)
+                    # print("4",resized_frames[0].shape)
+                    image_dict[cam_name] = np.stack(resized_frames, axis=0)
+                    # print("5",image_dict[cam_name].shape)
                 all_cam_images.append(image_dict[cam_name])
 
             if self.use_depth:
@@ -704,7 +723,7 @@ def get_norm_stats(dataset_path_list):
 def find_all_hdf5(dataset_dir, skip_mirrored_data):
     hdf5_files = []
     for root, dirs, files in os.walk(dataset_dir):
-        for filename in fnmatch.filter(files, "*.h5"):
+        for filename in fnmatch.filter(files, "*.hdf5"):
             if "features" in filename:
                 continue
             if skip_mirrored_data and "mirror" in filename:
@@ -864,7 +883,7 @@ def load_data(
         batch_size=batch_size_train,
         sampler=train_sampler,
         pin_memory=True,
-        num_workers=8,
+        num_workers=16,
         prefetch_factor=2,
         persistent_workers=True, 
     )
@@ -873,7 +892,7 @@ def load_data(
         batch_size=batch_size_val,
         sampler=val_sampler,
         pin_memory=True,
-        num_workers=8,
+        num_workers=16,
         prefetch_factor=2,
         persistent_workers=True, 
     )
