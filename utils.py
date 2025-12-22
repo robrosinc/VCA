@@ -232,28 +232,27 @@ class EpisodicDataset(torch.utils.data.Dataset):
                             if f"{cam_name}_masks" in root["/observations/masks"]:
                                 mask_dict[cam_name] = np.expand_dims(np.array(
                                     root[f"/observations/masks/{cam_name}_masks"]
-                                )[img_sampling][:,:,:640], axis=1)
+                                )[img_sampling][:,:,:], axis=1)
+                                print("raw obs/masks/head_masks: ", mask_dict[cam_name].shape)
                             elif cam_name in root["/observations/masks"]:
                                 unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
+                                print("raw obs/masks/head:", unique_compressed.shape)
                                 decompressed_masks_unique = [
                                     np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
                                     for entry in unique_compressed
                                 ]
                                 decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                                print("resized obs/masks/head:", np.array(decompressed_masks).shape)
                                 mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
                         else:
                             if cam_name in root["/prompts/masks"]:
                                 # The data is already an uncompressed numpy array of shape (T, H, W)
                                 uncompressed_masks = root[f"/prompts/masks/{cam_name}"][()]
-                                
-                                # Select the masks using the unique and inverse indices, similar to the original logic
-                                # This assumes uncompressed_masks has a shape of (T_total, H, W) where T_total is the total number of frames
                                 selected_masks_unique = uncompressed_masks[unique_indices]
-                                
-                                # Reorder the masks based on inverse_indices
+
                                 selected_masks = selected_masks_unique[inverse_indices]
+                                print("raw prompts/masks (no resize):", selected_masks.shape)
                                 
-                                # Stack the masks and add a new dimension
                                 mask_dict[cam_name] = np.expand_dims(selected_masks, axis=1)
                             else:
                                 raise KeyError("No valid mask dataset found for head_camera")
