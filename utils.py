@@ -57,7 +57,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.separate_left_right = False
         self.img_downsample = True
         self.img_downsample_size = (240, 640) # (180, 640) or (240, 640)
-        # self.img_downsample_size = (256, 512)
 
         self.img_debug = False
 

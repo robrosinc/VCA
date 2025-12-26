@@ -1,5 +1,8 @@
 opencv-python
 h5py
+wandb
+h5py
 scipy
 wandb
 transformers
+opencv-python

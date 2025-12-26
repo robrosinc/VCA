@@ -117,7 +117,7 @@ def main(args):
     esb_k = 0.05
     policy_update_period = 10000 # tick, work without temporal ensemble
     use_depth = False
-    use_masks = True
+    use_masks = args['use_masks']
     overwrite = False
     relative_obs_mode = False
     relative_action_mode = False
@@ -148,7 +148,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_120000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_200000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -818,5 +818,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_dir', action='store', type=str, help='Check Point Directory.', required=True)
     parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='mask_demo', required=False)
-    # parser.add_argument('--use_masks', action='store_true')
+    parser.add_argument('--use_masks', action='store_true')
     main(vars(parser.parse_args()))
