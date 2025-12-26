@@ -333,8 +333,8 @@ def main(args):
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
             # cropped_first_image = first_image[140:-100,:,:].copy()
+            first_input = first_image[:,:640].copy()
             if use_masks:
-                first_input = first_image[:,:640].copy()
                 binary_mask = send_array_recv_mask(first_input)
                 first_mask = (binary_mask > 0).astype(np.float32) * 255
                 if img_downsampling:
@@ -345,6 +345,8 @@ def main(args):
                 mask_obs_history['head_camera'][0] = first_mask
                 # print("next value", mask_obs_history["head_camera"].shape)
             # first_image = cv2.resize(cropped_first_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
+        else:
+            first_image = cv2.resize(first_image, dsize=(640,480), interpolation=cv2.INTER_LINEAR)
         first_image = rearrange(first_image, 'h w c -> c h w')
 
         image_obs_history[cam_name] = np.repeat(first_image[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0) #0xxx0xxx0
@@ -457,8 +459,8 @@ def main(args):
 
                     if cam_name == 'head_camera':
                         # cropped_image = current_image[140:-100,:,:].copy()
+                        current_input = current_image[:,:640].copy()
                         if use_masks:
-                            current_input = current_image[:,:640].copy()
                             binary_mask = send_array_recv_mask(current_input)
                             current_mask = (binary_mask > 0).astype(np.float32) * 255
                             # current_mask = np.expand_dims(binary_mask, axis=0) # channel dim
@@ -472,7 +474,8 @@ def main(args):
                             else:
                                 mask_obs_history[cam_name][0] = current_mask
                         # current_image = cv2.resize(cropped_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
-
+                    else:
+                        current_image = cv2.resize(current_image, dsize=(640,480), interpolation=cv2.INTER_LINEAR)
                     # current_image = rearrange(image_recorder.get_images()[cam_name], 'h w c -> c h w')
                     current_image = rearrange(current_image, 'h w c -> c h w')
 
