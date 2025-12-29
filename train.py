@@ -225,14 +225,14 @@ def train(rank, world_size, args):
     policy.cuda(rank)
     for param in policy.model.parameters():
         param.requires_grad = True # False
-    for name, param in policy.model.named_parameters():
-        if name.startswith("mask"):
-            param.requires_grad = True
-            if 'weight' in name:
-                if param.dim() >= 2:
-                    init.kaiming_normal_(param, mode ='fan_out', nonlinearity='relu')
-            elif 'bias' in name:
-                init.zeros_(param)
+    # for name, param in policy.model.named_parameters():
+    #     if name.startswith("mask"):
+    #         param.requires_grad = True
+    #         if 'weight' in name:
+    #             if param.dim() >= 2:
+    #                 init.kaiming_normal_(param, mode ='fan_out', nonlinearity='relu')
+    #         elif 'bias' in name:
+    #             init.zeros_(param)
     policy = DDP(policy, device_ids=[rank], find_unused_parameters=True)
     optimizer = policy.module.configure_optimizers(lr_backbone, args['lr'], 1e-4)
 
@@ -240,7 +240,7 @@ def train(rank, world_size, args):
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
-            project="blocksort-headmono",
+            project="blocksort-headmono-without-mask",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,

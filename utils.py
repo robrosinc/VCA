@@ -251,7 +251,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                                     for entry in unique_compressed
                                 ]
                                 decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
-                                print("prompts/masks (resized):", np.array(decompressed_masks).shape)
+                                # print("prompts/masks (resized):", np.array(decompressed_masks).shape)
                                 mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
                             else:
                                 raise KeyError("No valid mask dataset found for head_camera")

@@ -131,8 +131,8 @@ def main(args):
     inference_batch = 1
 
     ### Experiment Parameters
-    dsr_pose_action_skip = 11
-    gripper_action_skip = 11
+    dsr_pose_action_skip = 8
+    gripper_action_skip = 8
     record_snapshot = True
     img_name = 'test'
     
@@ -148,7 +148,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_200000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_400000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -333,9 +333,9 @@ def main(args):
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
             # cropped_first_image = first_image[140:-100,:,:].copy()
-            first_input = first_image[:,:640].copy()
+            first_image = first_image[:,:640]
             if use_masks:
-                binary_mask = send_array_recv_mask(first_input)
+                binary_mask = send_array_recv_mask(first_image)
                 first_mask = (binary_mask > 0).astype(np.float32) * 255
                 if img_downsampling:
                     # first_mask = cv2.resize(first_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
@@ -459,9 +459,9 @@ def main(args):
 
                     if cam_name == 'head_camera':
                         # cropped_image = current_image[140:-100,:,:].copy()
-                        current_input = current_image[:,:640].copy()
+                        current_image = current_image[:,:640]
                         if use_masks:
-                            binary_mask = send_array_recv_mask(current_input)
+                            binary_mask = send_array_recv_mask(current_image)
                             current_mask = (binary_mask > 0).astype(np.float32) * 255
                             # current_mask = np.expand_dims(binary_mask, axis=0) # channel dim
                             if img_downsampling:
@@ -489,6 +489,7 @@ def main(args):
                 # print('image obs', image_obs_history['head_camera'].shape)
                 all_cam_images = []
                 for cam_name in camera_names:
+                    # print(cam_name, image_obs_history[cam_name].shape)
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
@@ -570,7 +571,7 @@ def main(args):
                 t2 = time.time()
                 # policy inference
                 # print("shape", cam_images.shape, cam_masks.shape) # [1,3,2,3,240,640] [2,1,240,640]
-                all_actions = policy(robot_obs_history_torch, cam_images, cam_masks) # action dim: [1, chunk_size, action_dim]
+                all_actions = policy(robot_obs_history_torch, cam_images, masks = cam_masks) # action dim: [1, chunk_size, action_dim]
                 t3 = time.time()
                 all_actions = all_actions.cpu().numpy()
                 all_actions = all_actions[0]

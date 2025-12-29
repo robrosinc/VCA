@@ -2,11 +2,11 @@ import pathlib
 import os
 
 ### Task parameters
-DATA_DIR = os.path.expanduser('/home/robros-ai/dg/IL_data/new')
-# DATA_DIR = os.path.expanduser('/workspace/dataset2')
+# DATA_DIR = os.path.expanduser('/home/robros-ai/dg/IL_data/new')
+DATA_DIR = os.path.expanduser('/workspace/dataset2')
 TASK_CONFIGS = {
     ### BLOCK SORT
-    'blocksort':{
+    'blocksort_mask':{
         'dataset_dir': DATA_DIR,
         'episode_len': 5000,
         'train_ratio': 0.99,
