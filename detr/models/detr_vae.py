@@ -252,7 +252,7 @@ class DETRVAE(nn.Module):
 
                             slot_tokens.append(slot_token)
                             slot_pos_tokens.append(slot_pos)
-                            print("slot_tokens", slot_token.shape, "slot_pos_tokens", slot_pos.shape)
+                            # print("slot_tokens", slot_token.shape, "slot_pos_tokens", slot_pos.shape)
                     else:
                         # ---- keep 4D ----
                         all_cam_features.append(features)
@@ -299,7 +299,7 @@ class DETRVAE(nn.Module):
                 src = torch.cat([slot_src, vis_src], dim=0)  # src.shape = (S_total, B, C)
                 pos = torch.cat([slot_pos, vis_pos], dim=0)  # pos.shape = (S_total, B, C)
 
-                print("src", src.shape, "pos", pos.shape)
+                # print("src", src.shape, "pos", pos.shape)
 
             else:
                 src = torch.cat(all_cam_features, axis=3)

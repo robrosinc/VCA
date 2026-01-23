@@ -75,7 +75,7 @@ class Transformer(nn.Module):
             addition_input = torch.stack([latent_input, proprio_input], axis=0)
             # print("addition_input", addition_input.shape)
             src = torch.cat([addition_input, src], axis=0)
-            print("src",src.shape, "pos_embed", pos_embed.shape)
+            # print("src",src.shape, "pos_embed", pos_embed.shape)
 
         tgt = torch.zeros_like(query_embed)
         # print("tgt",tgt.shape) #  Chunksize B 512
