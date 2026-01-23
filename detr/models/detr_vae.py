@@ -71,7 +71,11 @@ class DETRVAE(nn.Module):
             elif text_encoder is not None:
                 self.text_encoder = text_encoder
                 self.input_proj_text = nn.Linear(text_encoder.output_dim, hidden_dim)
-                self.text_pos_embed = nn.Embedding(text_encoder.max_text_len*self.num_image_observations, hidden_dim)
+                self.num_slots = 7 # TODO tune
+                self.slot_query = nn.Parameter(torch.randn(self.num_slots, hidden_dim))
+                self.slot_proj = nn.Linear(hidden_dim, hidden_dim)
+                self.slot_norm = nn.LayerNorm(hidden_dim)
+                self.slot_pos_embed = nn.Parameter(torch.randn(1, hidden_dim))
 
         else:
             # input_dim = 14 + 7 # robot_state + env_state
@@ -160,6 +164,34 @@ class DETRVAE(nn.Module):
 
         return latent_input, probs, binaries, mu, logvar
 
+    def extract_object_slots(self, feat_tokens, pos_tokens):
+        """
+        feat_tokens: (S, B, C)  — spatial tokens (flattened image features)
+        pos_tokens:  (S, B, C)  — positional embeddings for each token
+        returns: slots (B, K, C)
+        """
+
+        # Add positional embeddings
+        feat_tokens = feat_tokens + pos_tokens  # (S, B, C)
+
+        S, B, C = feat_tokens.shape
+        x = feat_tokens.permute(1, 0, 2)  # (B, S, C)
+
+        # slot queries
+        q = self.slot_query.unsqueeze(0).expand(B, -1, -1)  # (B, K, C)
+        q = self.slot_proj(q)                               # (B, K, C)
+
+        # scaled dot-product attention: slots attend to spatial tokens
+        scale = C ** -0.5
+        attn_logits = torch.einsum("bkc,bsc->bks", q, x) * scale
+        attn = torch.softmax(attn_logits, dim=-1)           # (B, K, S)
+
+        # aggregate spatial tokens into slots
+        slots = torch.einsum("bks,bsc->bkc", attn, x)       # (B, K, C)
+        slots = self.slot_norm(slots)
+
+        return slots
+
     def forward(self, qpos, image, env_state, depth = None, masks = None, input_ids = None, attention_mask = None, actions=None, is_pad=None, vq_sample=None, encoding_only=False):
         """
         qpos: batch, num_obs, robot_state_dim
@@ -178,15 +210,53 @@ class DETRVAE(nn.Module):
             # Image observation features and position embeddings
             all_cam_features = []
             all_cam_pos = []
+            slot_tokens = []
+            slot_pos_tokens = []
             for i in range(len(self.backbones)):
                 for t in range(self.num_image_observations):
                     features, pos = self.backbones[i](image[:, i, t])
-                    features = features[0] # take the last layer feature
-                    pos = pos[0]
-                    all_cam_features.append(self.input_proj(features))
-                    all_cam_pos.append(pos)
+                    features = features[0]  # (B, C, H, W)
+                    pos = pos[0]            # (B, C, H, W)
+
+                    features = self.input_proj(features)
+
+                    if self.use_text:
+                        # ---- flatten vision immediately ----
+                        B, C, H, W = features.shape
+                        feat_tokens = features.flatten(2).permute(2, 0, 1)  # (HW, B, C)
+                        pos_tokens  = pos.flatten(2).permute(2, 0, 1)       # (HW, B, C)
+
+                        all_cam_features.append(feat_tokens)
+                        all_cam_pos.append(pos_tokens)
+
+                        # ---- slot extraction ONLY ON FIRST BACKBONE ----
+                        if i == 0:
+                            slots = self.extract_object_slots(feat_tokens, pos_tokens) # (B, K, C)
+
+                            text_feat = self.text_encoder(
+                                input_ids[:, t],
+                                attention_mask=attention_mask[:, t]
+                            )
+
+                            text_mask = attention_mask[:, t].unsqueeze(-1)
+                            text_vec = (text_feat * text_mask).sum(dim=1) / text_mask.sum(dim=1)
+
+                            sim = torch.einsum("bc,bkc->bk", text_vec, slots)
+                            slot_weights = torch.softmax(sim, dim=-1)
+                            selected_slot = torch.einsum("bk,bkc->bc", slot_weights, slots)
+
+                            slot_token = selected_slot.unsqueeze(0)  # (1, B, C)
+                            slot_pos = self.slot_pos_embed.unsqueeze(1).repeat(1, B, 1)
+
+                            slot_tokens.append(slot_token)
+                            slot_pos_tokens.append(slot_pos)
+
+                    else:
+                        # ---- keep 4D ----
+                        all_cam_features.append(features)
+                        all_cam_pos.append(pos)
+
                     del features, pos
-            torch.cuda.empty_cache()
 
             if self.use_masks:
                 for i in range(len(self.mask_backbones)):
@@ -194,53 +264,42 @@ class DETRVAE(nn.Module):
                         # print("1", masks.shape) # 1 1 2 1 240 640
                         # print("2", masks[:,i,t].shape) # 1 1 240 640
                         features, pos = self.mask_backbones[i](masks[:, i, t])
-                        features = features[0] # take the last layer feature
-                        # print("3", features.shape) # 1 512 8 20
+                        features = features[0]  # (B, C, H, W)
                         pos = pos[0]
-                        all_cam_features.append(self.input_proj_masks(features))
-                        all_cam_pos.append(pos)
+
+                        features = self.input_proj_masks(features)
+
+                        if self.use_text:
+                            # ---- token mode ----
+                            B, C, H, W = features.shape
+                            feat_tokens = features.flatten(2).permute(2, 0, 1)  # (HW, B, C)
+                            pos_tokens  = pos.flatten(2).permute(2, 0, 1)
+
+                            all_cam_features.append(feat_tokens)
+                            all_cam_pos.append(pos_tokens)
+                        else:
+                            # ---- spatial mode ----
+                            all_cam_features.append(features)
+                            all_cam_pos.append(pos)
+
                         del features, pos
-            torch.cuda.empty_cache()
             # print(all_cam_pos[0].shape)  # (B, hidden_dim, H, W)
             if self.use_text:
-                # all_cam_features, all_cam_pos flatten, permute는 나중에 텐서로 합친 후에
-                # 먼저 리스트를 tensor로 바꿔줍니다.
-                all_cam_features_tensor = torch.stack(all_cam_features, dim=1)  # (B, n*k, C, H, W) (16, 6, 512, 8, 20)
-                all_cam_pos_tensor = torch.stack(all_cam_pos, dim=1)  # (1, n*k, C, H, W) (1, 6, 512, 8, 20)
+                # concatenate vision tokens
+                vis_src = torch.cat(all_cam_features, dim=0)  # (S_vis, B, C)
+                vis_pos = torch.cat(all_cam_pos, dim=0)
 
-                # flatten spatial dimensions
-                B, x, C, H, W = all_cam_features_tensor.shape
-                all_cam_features_tensor = all_cam_features_tensor.view(B, x, C, H * W)  # (B, n*k, C, 160)
-                all_cam_pos_tensor = all_cam_pos_tensor.view(x, C, H * W)  # (n*k, C, 160)
+                # concatenate slot tokens across time
+                slot_src = torch.cat(slot_tokens, dim=0)  # (T, B, C)
+                slot_pos = torch.cat(slot_pos_tokens, dim=0)
 
-                # permute and reshape to (B, 160*n*k, C)
-                all_cam_features_tensor = all_cam_features_tensor.permute(0, 3, 1, 2).reshape(B, H * W * x, C)
-                all_cam_pos_tensor = all_cam_pos_tensor.permute(2, 0, 1).reshape(H * W * x, C)
-
-                all_text_features = []
-                
-                for t in range(self.num_image_observations):
-                    features = self.text_encoder(input_ids[:, t], attention_mask=attention_mask[:, t])
-                    all_text_features.append(features)
-                    del features
-
-                all_text_features_tensor = torch.stack(all_text_features, dim=1) # (B, n, max_len, hidden_dim)
-                all_text_features_tensor = all_text_features_tensor.view(B, self.num_image_observations * self.text_encoder.max_text_len, C)
-
-                seq_len = all_text_features_tensor.size(1)
-                text_pos = self.text_pos_embed(torch.arange(seq_len, device=all_text_features_tensor.device))  # (seq_len, hidden_dim)
-
-                # all_cam_features_tensor에 텍스트 임베딩 추가
-                all_cam_features_tensor = torch.cat([all_cam_features_tensor, self.input_proj_text(all_text_features_tensor)], dim=1)
-                all_cam_pos_tensor = torch.cat([all_cam_pos_tensor, text_pos], dim=0)
-
-                src = all_cam_features_tensor
-                pos = all_cam_pos_tensor
+                # final src: [slots | vision]
+                src = torch.cat([slot_src, vis_src], dim=0)  # src.shape = (S_total, B, C)
+                pos = torch.cat([slot_pos, vis_pos], dim=0)  # pos.shape = (S_total, B, C)
 
             else:
                 src = torch.cat(all_cam_features, axis=3)
                 pos = torch.cat(all_cam_pos, axis=3)
-            torch.cuda.empty_cache()
 
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos.reshape(bs, -1))
