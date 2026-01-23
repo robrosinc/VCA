@@ -47,6 +47,8 @@ class Transformer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, src, mask, query_embed, pos_embed, latent_input=None, proprio_input=None, additional_pos_embed=None):
+        # print("src", src.shape, "pos_embed", pos_embed.shape, "query_embed", query_embed.shape)
+        # print("latent_input", latent_input.shape, "proprio_input", proprio_input.shape, "addition_pos", additional_pos_embed.shape)
         # TODO flatten only when input has H and W
         if len(src.shape) == 4: # has H and W
             # flatten BxCxHxW to HWxBxC
@@ -63,17 +65,17 @@ class Transformer(nn.Module):
             src = torch.cat([addition_input, src], axis=0)
         else:
             assert len(src.shape) == 3
-            # flatten BxHWxC to HWxBxC
-            bs, hw, c = src.shape
-            src = src.permute(1, 0, 2)
-            pos_embed = pos_embed.unsqueeze(1).repeat(1, bs, 1)
+            hw, bs, c = src.shape
+            pos_embed = pos_embed.repeat(1, bs, 1)
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
 
             additional_pos_embed = additional_pos_embed.unsqueeze(1).repeat(1, bs, 1) # seq, bs, dim
             pos_embed = torch.cat([additional_pos_embed, pos_embed], axis=0)
 
             addition_input = torch.stack([latent_input, proprio_input], axis=0)
+            # print("addition_input", addition_input.shape)
             src = torch.cat([addition_input, src], axis=0)
+            print("src",src.shape, "pos_embed", pos_embed.shape)
 
         tgt = torch.zeros_like(query_embed)
         # print("tgt",tgt.shape) #  Chunksize B 512

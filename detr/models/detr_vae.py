@@ -203,7 +203,8 @@ class DETRVAE(nn.Module):
         latent_input, probs, binaries, mu, logvar = self.encode(qpos, actions, is_pad, vq_sample)
         if encoding_only is True:
             return mu, logvar
-        
+        # print("qpos",qpos.shape,"image", image.shape,"input_ids", input_ids.shape)
+        # print("latent_input", latent_input.shape)
         bs = qpos.shape[0]
         # cvae decoder
         if self.backbones is not None:
@@ -223,6 +224,7 @@ class DETRVAE(nn.Module):
                     if self.use_text:
                         # ---- flatten vision immediately ----
                         B, C, H, W = features.shape
+                        # print("features",features.shape, "pos", pos.shape)
                         feat_tokens = features.flatten(2).permute(2, 0, 1)  # (HW, B, C)
                         pos_tokens  = pos.flatten(2).permute(2, 0, 1)       # (HW, B, C)
 
@@ -237,20 +239,20 @@ class DETRVAE(nn.Module):
                                 input_ids[:, t],
                                 attention_mask=attention_mask[:, t]
                             )
-
+                            # print("text_feat", text_feat.shape)
                             text_mask = attention_mask[:, t].unsqueeze(-1)
                             text_vec = (text_feat * text_mask).sum(dim=1) / text_mask.sum(dim=1)
-
+                            # print("test_vec", text_vec.shape)
                             sim = torch.einsum("bc,bkc->bk", text_vec, slots)
                             slot_weights = torch.softmax(sim, dim=-1)
                             selected_slot = torch.einsum("bk,bkc->bc", slot_weights, slots)
-
+                            # print("selected_slot", selected_slot.shape)
                             slot_token = selected_slot.unsqueeze(0)  # (1, B, C)
-                            slot_pos = self.slot_pos_embed.unsqueeze(1).repeat(1, B, 1)
+                            slot_pos = self.slot_pos_embed.unsqueeze(1)
 
                             slot_tokens.append(slot_token)
                             slot_pos_tokens.append(slot_pos)
-
+                            print("slot_tokens", slot_token.shape, "slot_pos_tokens", slot_pos.shape)
                     else:
                         # ---- keep 4D ----
                         all_cam_features.append(features)
@@ -296,6 +298,8 @@ class DETRVAE(nn.Module):
                 # final src: [slots | vision]
                 src = torch.cat([slot_src, vis_src], dim=0)  # src.shape = (S_total, B, C)
                 pos = torch.cat([slot_pos, vis_pos], dim=0)  # pos.shape = (S_total, B, C)
+
+                print("src", src.shape, "pos", pos.shape)
 
             else:
                 src = torch.cat(all_cam_features, axis=3)

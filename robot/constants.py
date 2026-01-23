@@ -3,7 +3,7 @@ import os
 
 ### Task parameters
 # DATA_DIR = os.path.expanduser('/home/robros-ai/dg/IL_data/new')
-DATA_DIR = os.path.expanduser('/workspace/dataset2')
+DATA_DIR = os.path.expanduser('/root/dataset')
 TASK_CONFIGS = {
     ### BLOCK SORT
     'blocksort_mask':{
