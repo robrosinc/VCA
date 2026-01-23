@@ -31,7 +31,8 @@ TASK_CONFIGS = {
         # 'sample_weights': [3,1],
     },
     'hanoi2':{
-        'dataset_dir': DATA_DIR + '/hanoi',
+        'dataset_dir': DATA_DIR, 
+#+ '/hanoi',
         'episode_len': 3000,
         'train_ratio': 0.99,
         'camera_names': ['rhand_camera', 'head_camera'],

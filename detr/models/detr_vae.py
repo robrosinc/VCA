@@ -242,7 +242,7 @@ class DETRVAE(nn.Module):
         actions: batch, seq, action_dim
         """
         # print(f'qpos shape: {qpos.shape}')
-        start_time = time.time()
+        # start_time = time.time()
         latent_input, probs, binaries, mu, logvar = self.encode(qpos, actions, is_pad, vq_sample)
         if encoding_only is True:
             return mu, logvar
@@ -302,7 +302,10 @@ class DETRVAE(nn.Module):
                                 slots = slots + presence.unsqueeze(-1) * delta
 
                             # spatial centroid injection (S,2)
-                            slot_centroids = torch.einsum("bks,sd->bkd", attn, self.spatial_coords)  # (B, K, 2)
+                            # bmm instead of einsum
+                            spatial_coords_expanded = self.spatial_coords.unsqueeze(0).expand(B, -1, -1)
+                            slot_centroids = torch.bmm(attn, spatial_coords_expanded) 
+                            # slot_centroids = torch.einsum("bks,sd->bkd", attn, self.spatial_coords)  # (B, K, 2)
                             attn_mass = attn.sum(dim=-1, keepdim=True)  # (B,K,1)
                             slot_centroids = slot_centroids / (attn_mass + 1e-6)
                             slot_centroids = slot_centroids * presence.unsqueeze(-1)
@@ -326,11 +329,14 @@ class DETRVAE(nn.Module):
                             slot_pos = slot_pos_abs + rank_embed
                             slots = slots + presence.unsqueeze(-1) * slot_pos
 
-                            sim = torch.einsum("bc,bkc->bk", text_vec, slots)
+                            sim = torch.bmm(text_vec.unsqueeze(1), slot_pos.transpose(1, 2)).squeeze(1)  # (B, K)
+                            # sim = torch.einsum("bc,bkc->bk", text_vec, slot_pos)
                             slot_weights = torch.softmax(sim, dim=-1)
-                            selected_slot = torch.einsum("bk,bkc->bc", slot_weights, slots)
-                            selected_slot_pos = torch.einsum("bk,bkc->bc", slot_weights, slot_pos)
-                            
+                            selected_slot = torch.bmm(slot_weights.unsqueeze(1), slots).squeeze(1)  # (B, C)
+                            selected_slot_pos = torch.bmm(slot_weights.unsqueeze(1), slot_pos).squeeze(1)  # (B, C)
+                            # selected_slot = torch.einsum("bk,bkc->bc", slot_weights, slots)
+                            # selected_slot_pos = torch.einsum("bk,bkc->bc", slot_weights, slot_pos)
+
                             # print("selected_slot", selected_slot.shape)
                             slot_token = selected_slot.unsqueeze(0)  # (1, B, C)
                             slot_pos = selected_slot_pos.unsqueeze(0)  # (1, B, C)
@@ -404,8 +410,8 @@ class DETRVAE(nn.Module):
             hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
         a_hat = self.action_head(hs)
         is_pad_hat = self.is_pad_head(hs)
-        end_time = time.time()
-        print(f'DETR VAE forward time: {end_time - start_time:.4f} sec')
+        # end_time = time.time()
+        # print(f'DETR VAE forward time: {end_time - start_time:.4f} sec')
         return a_hat, is_pad_hat, [mu, logvar], probs, binaries
 
 

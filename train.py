@@ -165,7 +165,8 @@ def train(rank, world_size, args):
     }
 
 
-    train_loader, val_loader, train_sampler, val_sampler, norm_stats, is_sim = load_data(
+    #train_loader, val_loader, train_sampler, val_sampler, norm_stats, is_sim = load_data(
+    train_loader, train_sampler, norm_stats, is_sim = load_data(
         dataset_dir,
         name_filter,
         camera_names,
@@ -250,7 +251,7 @@ def train(rank, world_size, args):
         filtered_dict = {}
         for k, v in state_dict.items():
             for prefix in pretrained_prefixes:
-                if k.startswith(prefix + "."):
+                if k.startswith("model." + prefix + "."):
                     filtered_dict[k] = v
                     break
 
@@ -360,8 +361,8 @@ def train(rank, world_size, args):
             wandb.finish()
         if 'train_loader' in locals():
             del train_loader
-        if 'val_loader' in locals():
-            del val_loader
+        #if 'val_loader' in locals():
+        #    del val_loader
         torch.cuda.empty_cache()
         gc.collect()  # <<< 확실하게 garbage collection까지
         
