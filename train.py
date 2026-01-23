@@ -225,14 +225,43 @@ def train(rank, world_size, args):
     policy.cuda(rank)
     for param in policy.model.parameters():
         param.requires_grad = True # False
-    # for name, param in policy.model.named_parameters():
-    #     if name.startswith("mask"):
-    #         param.requires_grad = True
-    #         if 'weight' in name:
-    #             if param.dim() >= 2:
-    #                 init.kaiming_normal_(param, mode ='fan_out', nonlinearity='relu')
-    #         elif 'bias' in name:
-    #             init.zeros_(param)
+
+    if args.get("pretrained_encoder_path") is not None:
+        # Load checkpoint
+        ckpt = torch.load(args["pretrained_encoder_path"], map_location=f"cuda:{rank}")
+        state_dict = ckpt.get("model_state", ckpt)
+        state_dict = remove_module_prefix(state_dict)  # remove 'module.' if needed
+
+        # Prefixes of layers we want to load
+        pretrained_prefixes = [
+            "encoder",
+            "encoder_action_proj",
+            "encoder_joint_proj",
+            "cls_embed",
+            "pos_table",
+            "latent_proj",
+            "latent_out_proj"
+        ]
+
+        # Filter only keys matching the prefixes
+        filtered_dict = {}
+        for k, v in state_dict.items():
+            for prefix in pretrained_prefixes:
+                if k.startswith(prefix + "."):
+                    filtered_dict[k] = v
+                    break
+
+        # Load weights into the policy
+        missing, unexpected = policy.load_state_dict(filtered_dict, strict=False)
+        print(f"[Rank {rank}] Loaded pretrained weights. Missing: {missing}, Unexpected: {unexpected}")
+
+        # Freeze pretrained layers, but leave latent_out_proj trainable
+        for name, param in policy.named_parameters():
+            if any(name.startswith(prefix) for prefix in pretrained_prefixes) and not name.startswith("latent_out_proj"):
+                param.requires_grad = False  # freeze pretrained
+            else:
+                param.requires_grad = True
+                
     policy = DDP(policy, device_ids=[rank], find_unused_parameters=True)
     optimizer = policy.module.configure_optimizers(lr_backbone, args['lr'], 1e-4)
 
@@ -501,6 +530,8 @@ if __name__ == "__main__":
     parser.add_argument("--vq_class", action="store", type=int, help="vq_class")
     parser.add_argument("--vq_dim", action="store", type=int, help="vq_dim")
     parser.add_argument("--no_encoder", action="store_true")
+    parser.add_argument("--pretrained_encoder_path", action="store", type=str, help="Path to pretrained encoder")
+    parser.add_argument("--freeze_encoder", action="store_true")
 
     args = vars(parser.parse_args())
     rank = int(os.environ['RANK'])
