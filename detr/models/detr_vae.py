@@ -76,6 +76,17 @@ class DETRVAE(nn.Module):
                 self.slot_proj = nn.Linear(hidden_dim, hidden_dim)
                 self.slot_norm = nn.LayerNorm(hidden_dim)
                 self.slot_pos_embed = nn.Parameter(torch.randn(1, hidden_dim))
+                self.slot_self_attn = nn.TransformerEncoderLayer(
+                    d_model=hidden_dim,
+                    nhead=4,
+                    dim_feedforward=hidden_dim * 2,
+                    dropout=0.0,
+                    batch_first=True
+                )
+                self.slot_self_attn_layers = 2 
+                self.register_buffer("spatial_coords", None, persistent=False)
+                self.text_to_slot = nn.Linear(hidden_dim, hidden_dim)
+
 
         else:
             # input_dim = 14 + 7 # robot_state + env_state
@@ -164,33 +175,37 @@ class DETRVAE(nn.Module):
 
         return latent_input, probs, binaries, mu, logvar
 
-    def extract_object_slots(self, feat_tokens, pos_tokens):
+    def extract_object_slots(self, feat_tokens, pos_tokens, text_vec=None):
         """
-        feat_tokens: (S, B, C)  — spatial tokens (flattened image features)
-        pos_tokens:  (S, B, C)  — positional embeddings for each token
-        returns: slots (B, K, C)
+        feat_tokens: (S, B, C)
+        pos_tokens:  (S, B, C)
+        text_vec:    (B, C) or None
+        returns:
+            slots: (B, K, C)
+            attn:  (B, K, S)
         """
 
-        # Add positional embeddings
-        feat_tokens = feat_tokens + pos_tokens  # (S, B, C)
-
+        feat_tokens = feat_tokens + pos_tokens
         S, B, C = feat_tokens.shape
         x = feat_tokens.permute(1, 0, 2)  # (B, S, C)
 
-        # slot queries
+        # ---- slot query ----
         q = self.slot_query.unsqueeze(0).expand(B, -1, -1)  # (B, K, C)
-        q = self.slot_proj(q)                               # (B, K, C)
 
-        # scaled dot-product attention: slots attend to spatial tokens
+        if text_vec is not None:
+            q = q + self.text_to_slot(text_vec).unsqueeze(1)
+
+        q = self.slot_proj(q)
+
+        # ---- attention ----
         scale = C ** -0.5
         attn_logits = torch.einsum("bkc,bsc->bks", q, x) * scale
-        attn = torch.softmax(attn_logits, dim=-1)           # (B, K, S)
+        attn = torch.softmax(attn_logits, dim=-1)
 
-        # aggregate spatial tokens into slots
-        slots = torch.einsum("bks,bsc->bkc", attn, x)       # (B, K, C)
+        slots = torch.einsum("bks,bsc->bkc", attn, x)
         slots = self.slot_norm(slots)
 
-        return slots
+        return slots, attn
 
     def forward(self, qpos, image, env_state, depth = None, masks = None, input_ids = None, attention_mask = None, actions=None, is_pad=None, vq_sample=None, encoding_only=False):
         """
@@ -224,7 +239,16 @@ class DETRVAE(nn.Module):
                     if self.use_text:
                         # ---- flatten vision immediately ----
                         B, C, H, W = features.shape
-                        # print("features",features.shape, "pos", pos.shape)
+
+                        if self.spatial_coords is None or self.spatial_coords.shape[0] != H * W:
+                            y, x = torch.meshgrid(
+                                torch.linspace(-1, 1, H, device=features.device),
+                                torch.linspace(-1, 1, W, device=features.device),
+                                indexing="ij"
+                            )
+                            coords = torch.stack([x, y], dim=-1)      # (H, W, 2)
+                            self.spatial_coords = coords.view(-1, 2)  # (S, 2)
+
                         feat_tokens = features.flatten(2).permute(2, 0, 1)  # (HW, B, C)
                         pos_tokens  = pos.flatten(2).permute(2, 0, 1)       # (HW, B, C)
 
@@ -234,6 +258,23 @@ class DETRVAE(nn.Module):
                         # ---- slot extraction ONLY ON FIRST BACKBONE ----
                         if i == 0:
                             slots = self.extract_object_slots(feat_tokens, pos_tokens) # (B, K, C)
+
+                            slots, attn = self.extract_object_slots(
+                                feat_tokens, pos_tokens, text_vec
+                            )  # slots: (B, K, C), attn: (B, K, S)
+
+                            # ---- slot self-attention (전략 ①) ----
+                            for _ in range(self.slot_self_attn_layers):
+                                slots = self.slot_self_attn(slots)
+
+                            # ---- spatial centroid injection (전략 ②) ----
+                            # spatial_coords: (S, 2)
+                            slot_centroids = torch.einsum(
+                                "bks,sd->bkd", attn, self.spatial_coords
+                            )  # (B, K, 2)
+
+                            slot_pos_embed = self.slot_pos_mlp(slot_centroids)  # (B, K, C)
+                            slots = slots + slot_pos_embed
 
                             text_feat = self.text_encoder(
                                 input_ids[:, t],
