@@ -8,7 +8,7 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 from .backbone import build_backbone, build_mask_backbone
 from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
-
+import time
 import numpy as np
 
 import IPython
@@ -242,6 +242,7 @@ class DETRVAE(nn.Module):
         actions: batch, seq, action_dim
         """
         # print(f'qpos shape: {qpos.shape}')
+        start_time = time.time()
         latent_input, probs, binaries, mu, logvar = self.encode(qpos, actions, is_pad, vq_sample)
         if encoding_only is True:
             return mu, logvar
@@ -403,6 +404,8 @@ class DETRVAE(nn.Module):
             hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
         a_hat = self.action_head(hs)
         is_pad_hat = self.is_pad_head(hs)
+        end_time = time.time()
+        print(f'DETR VAE forward time: {end_time - start_time:.4f} sec')
         return a_hat, is_pad_hat, [mu, logvar], probs, binaries
 
 
