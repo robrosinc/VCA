@@ -319,8 +319,15 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     depth_data = 0
 
                 if self.use_text:
-                    input_ids = root['/prompts/text/input_ids'][unique_indices]
-                    attention_mask = root['/prompts/text/attention_mask'][unique_indices]
+                    use_prompt2 = (index % 2 == 1)
+
+                    if use_prompt2:
+                        input_ids = root['/prompts/input_ids2'][unique_indices]
+                        attention_mask = root['/prompts/attention_mask2'][unique_indices]
+                    else:
+                        input_ids = root['/prompts/input_ids'][unique_indices]
+                        attention_mask = root['/prompts/attention_mask'][unique_indices]
+
                     input_ids = [input_ids[i] for i in inverse_indices]
                     attention_mask = [attention_mask[i] for i in inverse_indices]
                     # Convert the Python lists to PyTorch tensors
