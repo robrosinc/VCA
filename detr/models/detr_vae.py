@@ -373,7 +373,7 @@ class DETRVAE(nn.Module):
             if self.use_text:
                 # concatenate vision tokens
                 vis_src = torch.cat(all_cam_features, dim=0)  # (S_vis, B, C)
-                vis_pos = torch.cat(all_cam_pos, dim=0)
+                vis_pos = torch.cat(all_cam_pos, dim=0).repeat(1, bs, 1)  # (S_vis, B, C)
 
                 # concatenate slot tokens across time
                 slot_src = torch.cat(slot_tokens, dim=0)  # (T, B, C)
@@ -386,8 +386,8 @@ class DETRVAE(nn.Module):
                 # print("src", src.shape, "pos", pos.shape)
 
             else:
-                src = torch.cat(all_cam_features, axis=3)
-                pos = torch.cat(all_cam_pos, axis=3)
+                src = torch.cat(all_cam_features, axis=3) # B, C, H, W
+                pos = torch.cat(all_cam_pos, axis=3) # 1, C, H, W
 
             # proprioception features
             proprio_input = self.input_proj_robot_state(qpos.reshape(bs, -1))

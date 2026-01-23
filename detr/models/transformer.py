@@ -66,7 +66,6 @@ class Transformer(nn.Module):
         else:
             assert len(src.shape) == 3
             hw, bs, c = src.shape
-            pos_embed = pos_embed.repeat(1, bs, 1)
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
 
             additional_pos_embed = additional_pos_embed.unsqueeze(1).repeat(1, bs, 1) # seq, bs, dim

@@ -154,6 +154,9 @@ def train(rank, world_size, args):
     else:
         raise NotImplementedError(f"policy class {policy_class} is not defined")
 
+    if use_text:
+        assert policy_config["image_observation_skip"] == 1  # always use one observation when using text
+
     actuator_config = {
         "actuator_network_dir": args["actuator_network_dir"],
         "history_len": args["history_len"],
