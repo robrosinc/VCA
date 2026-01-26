@@ -123,8 +123,8 @@ def main(args):
     inference_batch = 1
 
     ### Experiment Parameters
-    dsr_pose_action_skip = 8
-    gripper_action_skip = 8
+    dsr_pose_action_skip = 6
+    gripper_action_skip = 6
     record_snapshot = True
     img_name = 'test'
     
