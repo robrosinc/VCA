@@ -334,6 +334,14 @@ def train(rank, world_size, args):
                 print(f'current_epoch: {current_epoch}')
 
             policy.train()
+            if args["pretrained_encoder_path"] is not None and args["freeze_encoder"]:
+                policy.module.encoder.eval()
+                policy.module.encoder_action_proj.eval()
+                policy.module.encoder_joint_proj.eval()
+                policy.module.cls_embed.eval()
+                policy.module.pos_table.eval()
+                policy.module.latent_proj.eval()
+
             image_data, robot_proprio_data, action_data, is_pad, depth_data, mask_data, input_ids, attention_mask = [d.cuda(rank) for d in data]
 
             forward_dict = policy(robot_proprio_data, image_data, depth_data, mask_data, input_ids, attention_mask, action_data, is_pad)
