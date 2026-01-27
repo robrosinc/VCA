@@ -547,7 +547,7 @@ def mlp(input_dim, hidden_dim, output_dim, hidden_depth):
 
 
 def build_encoder(args):
-    d_model = args.hidden_dim # 256
+    d_model = args.hidden_dim # 512
     dropout = args.dropout # 0.1
     nhead = args.nheads # 8
     dim_feedforward = args.dim_feedforward # 2048
