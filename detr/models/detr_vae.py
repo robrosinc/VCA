@@ -74,7 +74,7 @@ class DETRVAE(nn.Module):
             elif text_encoder is not None:
                 self.text_encoder = text_encoder
                 self.input_proj_text = nn.Linear(text_encoder.output_dim, hidden_dim)
-                self.text_pos_embedding = nn.Embedding(1, 1, hidden_dim)  # learned position embedding for text token
+                self.text_pos_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
                 if self.use_slot_attention: # reserve for slot attention
                     self.num_slots = 6 # TODO tune
                     self.slot_query = nn.Parameter(torch.randn(self.num_slots, hidden_dim))
