@@ -449,7 +449,7 @@ class DETRVAE(nn.Module):
 
                     print("src", src.shape, "pos", pos.shape)
                 else:
-                    src = torch.cat([text_vec, vis_src], dim=0)  # src.shape = (S_total, B, C)
+                    src = torch.cat([text_vec.unsqueeze(0), vis_src], dim=0)  # src.shape = (S_total, B, C)
                     pos = torch.cat([self.text_pos_embedding.repeat(1,bs,1), vis_pos], dim=0)
 
             else:

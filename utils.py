@@ -717,10 +717,10 @@ def get_norm_stats(dataset_path_list):
         "state_std": state_std.numpy(),
     }
 
-    print(f"action_mean = {action_mean}")
-    print(f"action_std = {action_std}")
-    print(f"state_mean = {state_mean}")
-    print(f"state_std = {state_std}")
+    # print(f"action_mean = {action_mean}")
+    # print(f"action_std = {action_std}")
+    # print(f"state_mean = {state_mean}")
+    # print(f"state_std = {state_std}")
 
     return stats, all_episode_len
 
