@@ -244,7 +244,9 @@ def train(rank, world_size, args):
             "cls_embed",
             "pos_table",
             "latent_proj",
-            "latent_out_proj"
+            "latent_out_proj",
+            "backbones",
+            "input_proj",
         ]
 
         # Filter only keys matching the prefixes
@@ -261,7 +263,7 @@ def train(rank, world_size, args):
 
         # Freeze pretrained layers, but leave latent_out_proj trainable
         for name, param in policy.named_parameters():
-            if any(name.startswith(prefix) for prefix in pretrained_prefixes) and not name.startswith("latent_out_proj"):
+            if any(name.startswith(prefix) for prefix in pretrained_prefixes) and not name.startswith("latent_out_proj") and not name.startswith("input_proj"):
                 param.requires_grad = False  # freeze pretrained
             else:
                 param.requires_grad = True
