@@ -888,7 +888,7 @@ def load_data(
         batch_size=batch_size_train,
         sampler=train_sampler,
         pin_memory=True,
-        num_workers=32,
+        num_workers=10,
         prefetch_factor=2,
         persistent_workers=True, 
     )
