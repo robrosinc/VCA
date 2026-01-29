@@ -12,6 +12,7 @@ import time
 import numpy as np
 import os, logging
 import torch.distributed as dist
+from slot_attention import SlotAttention
 
 import IPython
 e = IPython.embed
@@ -77,31 +78,23 @@ class DETRVAE(nn.Module):
                 self.text_pos_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
                 if self.use_slot_attention: # reserve for slot attention
                     self.num_slots = 6 # TODO tune
-                    self.slot_query = nn.Parameter(torch.randn(self.num_slots, hidden_dim))
-                    self.slot_proj = nn.Linear(hidden_dim, hidden_dim)
-                    self.slot_norm = nn.LayerNorm(hidden_dim)
-                    self.slot_self_attn = nn.TransformerEncoderLayer(
-                        d_model=hidden_dim,
-                        nhead=4,
-                        dim_feedforward=hidden_dim * 2,
-                        dropout=0.1,
-                        batch_first=True
+                    self.slot_attn = SlotAttention(
+                        dim=hidden_dim,
+                        num_slots=self.num_slots,
+                        iters=3
                     )
-                    self.slot_self_attn_layers = 2 # TODO tune
                     self.register_buffer("spatial_coords", None, persistent=False)
-                    self.text_to_slot = nn.Linear(hidden_dim, hidden_dim)
-                    self.rank_tau = 0.1
+                    self.coord_mlp = nn.Sequential(
+                        nn.Linear(2, hidden_dim),
+                        nn.ReLU(inplace=True),
+                        nn.Linear(hidden_dim, hidden_dim)
+                    )
                     self.slot_pos_mlp = nn.Sequential(
                         nn.Linear(2, hidden_dim),
                         nn.ReLU(inplace=True),
                         nn.Linear(hidden_dim, hidden_dim)
                     )
-                    self.slot_rank_mlp = nn.Sequential(
-                        nn.Linear(2, hidden_dim),  # (rank_x, rank_y)
-                        nn.ReLU(inplace=True),
-                        nn.Linear(hidden_dim, hidden_dim)
-                    )
-                    self.slot_presence_head = nn.Sequential(
+                    self.presence_head = nn.Sequential(
                         nn.Linear(hidden_dim, hidden_dim // 2),
                         nn.ReLU(inplace=True),
                         nn.Linear(hidden_dim // 2, 1)
@@ -209,48 +202,6 @@ class DETRVAE(nn.Module):
 
         return latent_input, probs, binaries, mu, logvar
 
-    def extract_object_slots(self, feat_tokens, text_color=None):
-        """
-        feat_tokens: (S, B, C)
-        text_color:  (B, C) or None
-        returns:
-            slots: (B, K, C)
-            attn:  (B, K, S)
-        """
-
-        feat_tokens = feat_tokens
-        S, B, C = feat_tokens.shape
-        x = feat_tokens.permute(1, 0, 2)  # (B, S, C)
-
-        # ---- slot query ----
-        q = self.slot_query.unsqueeze(0).expand(B, -1, -1)  # (B, K, C)
-
-        if text_color is not None:
-            q = q + self.text_to_slot(text_color).unsqueeze(1)
-
-        q = self.slot_proj(q)
-
-        # ---- attention ----
-        scale = C ** -0.5
-        attn_logits = torch.einsum("bkc,bsc->bks", q, x) * scale
-        attn = torch.softmax(attn_logits, dim=-1)
-
-        slots = torch.einsum("bks,bsc->bkc", attn, x)
-        slots = self.slot_norm(slots)
-        presence_logits = self.slot_presence_head(slots).squeeze(-1)  # (B, K)
-        presence = torch.sigmoid(presence_logits)
-
-        return slots, attn, presence, presence_logits
-    
-    def soft_rank(self, coord, tau):
-        """
-        coord: (B, K)
-        return: soft rank in [0, K-1], shape (B, K)
-        """
-        diff = coord.unsqueeze(-1) - coord.unsqueeze(-2)  # (B, K, K)
-        prob = torch.sigmoid(diff / tau)
-        rank = prob.sum(dim=-1)
-        return rank
 
     # def check_nan(self, x, name):
     #     """
@@ -327,13 +278,12 @@ class DETRVAE(nn.Module):
                         all_cam_features.append(feat_tokens)
                         all_cam_pos.append(pos_tokens)
 
-                        if self.use_slot_attention:
-                            if self.spatial_coords is None or self.spatial_coords.shape[0] != H * W:
-                                y, x = torch.meshgrid(
-                                    torch.linspace(-1, 1, H, device=features.device),
-                                    torch.linspace(-1, 1, W, device=features.device),
-                                    indexing="ij"
-                                )
+                        if self.spatial_coords is None or self.spatial_coords.shape[0] != H * W:
+                            y, x = torch.meshgrid(
+                                torch.linspace(-1, 1, H, device=features.device),
+                                torch.linspace(-1, 1, W, device=features.device),
+                                indexing="ij"
+                            )
                             coords = torch.stack([x, y], dim=-1)      # (H, W, 2)
                             self.spatial_coords = coords.view(-1, 2)  # (S, 2)
 
@@ -346,60 +296,38 @@ class DETRVAE(nn.Module):
                             text_mask = attention_mask[:, t].unsqueeze(-1)
                             masked_text_feat = (text_feat * text_mask).sum(dim=1) / text_mask.sum(dim=1)
                             # print("text_vec", text_vec.shape)
-                            text_vec = masked_text_feat
-                            if self.use_slot_attention:
-                                slots, attn, presence, presence_logits = self.extract_object_slots(feat_tokens, pos_tokens, text_feat[:, 1:3])  # slots: (B, K, C), attn: (B, K, S)
-                                # self.check_nan(attn, "attn")
-                                # self attention to make slots to go for different regions
-                                for _ in range(self.slot_self_attn_layers):
-                                    delta = self.slot_self_attn(slots)
-                                    slots = slots + presence.unsqueeze(-1) * delta
+                            text_vec = self.input_proj_text(masked_text_feat)
+                            text_vec = text_vec = F.normalize(text_vec, dim=-1)
+                            slots, attn = self.slot_attn(x,return_attn=True) # x: (B, S, 512) # slots: (B, K, 512) # attn: (B, K, S)
+                            # self.check_nan(attn, "attn")
 
-                                # spatial centroid injection (S,2)
-                                # bmm instead of einsum
-                                spatial_coords_expanded = self.spatial_coords.unsqueeze(0).expand(B, -1, -1)
-                                slot_centroids = torch.bmm(attn, spatial_coords_expanded) 
-                                # slot_centroids = torch.einsum("bks,sd->bkd", attn, self.spatial_coords)  # (B, K, 2)
-                                attn_mass = attn.sum(dim=-1, keepdim=True)  # (B,K,1)
-                                slot_centroids = slot_centroids / (attn_mass + 1e-6)
-                                slot_centroids = slot_centroids * presence.unsqueeze(-1)
+                            presence_logits = self.presence_head(slots)  # (B, K, 1)
+                            presence = torch.sigmoid(presence_logits)   
 
-                                x = slot_centroids[..., 0]  # (B, K)
-                                y = slot_centroids[..., 1] 
-                                NEG_INF = -1e4
+                            coords = self.spatial_coords  # cached
+                            text_vec = F.normalize(text_vec, dim=-1)
+                            coord_embed = F.normalize(coord_embed, dim=-1)
 
-                                x_masked = x + (1-presence) * NEG_INF
-                                y_masked = y + (1-presence) * NEG_INF
+                            slot_centroids = torch.einsum("bks,sd->bkd", attn, coords)
+                            slot_mass = attn.sum(dim=-1, keepdim=True)
+                            slot_centroids = slot_centroids / (slot_mass + 1e-6)
 
-                                rank_x = self.soft_rank(x_masked, self.rank_tau)
-                                # self.check_nan(rank_x, "rank_x")
-                                rank_y = self.soft_rank(y_masked, self.rank_tau)
-                                # self.check_nan(rank_y, "rank_y")
+                            coord_embed = self.coord_mlp(slot_centroids)  # (B, K, D)
+                            scores = torch.einsum("bd,bkd->bk", text_vec, coord_embed) + torch.log(presence.squeeze(-1) + 1e-6)
+                            selected_idx = scores.argmax(dim=-1)
+                            selected_slot = slots[torch.arange(B), selected_idx]
 
-                                rank_x = rank_x / (self.num_slots - 1 + 1e-6)
-                                rank_y = rank_y / (self.num_slots - 1 + 1e-6)
-                                rank_xy = torch.stack([rank_x, rank_y], dim=-1)  # (B, K, 2)
+                            batch_idx = torch.arange(B, device=slots.device)
+                            selected_slot = slots[batch_idx, selected_idx]
+                            selected_centroids = slot_centroids[batch_idx, selected_idx]
+                            selected_slot_pe = self.slot_pos_mlp(selected_centroids)
 
-                                slot_pos_abs = self.slot_pos_mlp(slot_centroids)  # (B, K, C)
-                                rank_embed = self.slot_rank_mlp(rank_xy)
-                                slot_pos = slot_pos_abs + rank_embed
-                                slots = slots + presence.unsqueeze(-1) * slot_pos
+                            slot_token = selected_slot.unsqueeze(0)  # (1, B, C)
+                            slot_pos = selected_slot_pe.unsqueeze(0)  # (1, B, C)
 
-                                sim = torch.bmm(text_vec.unsqueeze(1), slot_pos.transpose(1, 2)).squeeze(1)  # (B, K)
-                                # sim = torch.einsum("bc,bkc->bk", text_vec, slot_pos)
-                                slot_weights = torch.softmax(sim, dim=-1)
-                                selected_slot = torch.bmm(slot_weights.unsqueeze(1), slots).squeeze(1)  # (B, C)
-                                selected_slot_pos = torch.bmm(slot_weights.unsqueeze(1), slot_pos).squeeze(1)  # (B, C)
-                                # selected_slot = torch.einsum("bk,bkc->bc", slot_weights, slots)
-                                # selected_slot_pos = torch.einsum("bk,bkc->bc", slot_weights, slot_pos)
-
-                                # print("selected_slot", selected_slot.shape)
-                                slot_token = selected_slot.unsqueeze(0)  # (1, B, C)
-                                slot_pos = selected_slot_pos.unsqueeze(0)  # (1, B, C)
-
-                                slot_tokens.append(slot_token)
-                                slot_pos_tokens.append(slot_pos)
-                                # print("slot_tokens", slot_token.shape, "slot_pos_tokens", slot_pos.shape)
+                            slot_tokens.append(slot_token)
+                            slot_pos_tokens.append(slot_pos)
+                            # print("slot_tokens", slot_token.shape, "slot_pos_tokens", slot_pos.shape)
                     else:
                         # ---- keep 4D ----
                         all_cam_features.append(features)
