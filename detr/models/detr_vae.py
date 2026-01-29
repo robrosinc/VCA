@@ -75,32 +75,30 @@ class DETRVAE(nn.Module):
             elif text_encoder is not None:
                 self.text_encoder = text_encoder
                 self.input_proj_text = nn.Linear(text_encoder.output_dim, hidden_dim)
-                self.text_pos_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-                if self.use_slot_attention: # reserve for slot attention
-                    self.num_slots = 6 # TODO tune
-                    self.slot_attn = SlotAttention(
-                        dim=hidden_dim,
-                        num_slots=self.num_slots,
-                        iters=3
-                    )
-                    self.register_buffer("spatial_coords", None, persistent=False)
-                    self.coord_mlp = nn.Sequential(
-                        nn.Linear(2, hidden_dim),
-                        nn.ReLU(inplace=True),
-                        nn.Linear(hidden_dim, hidden_dim)
-                    )
-                    self.slot_pos_mlp = nn.Sequential(
-                        nn.Linear(2, hidden_dim),
-                        nn.ReLU(inplace=True),
-                        nn.Linear(hidden_dim, hidden_dim)
-                    )
-                    self.presence_head = nn.Sequential(
-                        nn.Linear(hidden_dim, hidden_dim // 2),
-                        nn.ReLU(inplace=True),
-                        nn.Linear(hidden_dim // 2, 1)
-                    )
-
-
+                # self.text_pos_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+                self.num_slots = 6 # TODO tune
+                self.use_slot_attention = True
+                self.slot_attn = SlotAttention(
+                    dim=hidden_dim,
+                    num_slots=self.num_slots,
+                    iters=3
+                )
+                self.spatial_coords = None  # cache for spatial coordinates
+                self.coord_mlp = nn.Sequential(
+                    nn.Linear(2, hidden_dim),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(hidden_dim, hidden_dim)
+                )
+                self.slot_pos_mlp = nn.Sequential(
+                    nn.Linear(2, hidden_dim),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(hidden_dim, hidden_dim)
+                )
+                self.presence_head = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim // 2),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(hidden_dim // 2, 1)
+                )
         else:
             # input_dim = 14 + 7 # robot_state + env_state
             self.input_proj_robot_state = nn.Linear(self.state_dim*self.num_robot_observations, hidden_dim)
@@ -284,8 +282,8 @@ class DETRVAE(nn.Module):
                                 torch.linspace(-1, 1, W, device=features.device),
                                 indexing="ij"
                             )
-                            coords = torch.stack([x, y], dim=-1)      # (H, W, 2)
-                            self.spatial_coords = coords.view(-1, 2)  # (S, 2)
+                            coords = torch.stack([x, y], dim=-1).view(-1, 2)
+                            self.spatial_coords = coords
 
                         if i == 0:
                             text_feat = self.text_encoder(
@@ -294,10 +292,13 @@ class DETRVAE(nn.Module):
                             )
                             # print("text_feat", text_feat.shape)
                             text_mask = attention_mask[:, t].unsqueeze(-1)
-                            masked_text_feat = (text_feat * text_mask).sum(dim=1) / text_mask.sum(dim=1)
+                            denom = text_mask.sum(dim=1).clamp(min=1)
+                            masked_text_feat = (text_feat * text_mask).sum(dim=1) / denom
                             # print("text_vec", text_vec.shape)
                             text_vec = self.input_proj_text(masked_text_feat)
-                            text_vec = text_vec = F.normalize(text_vec, dim=-1)
+                            text_vec = F.normalize(text_vec, dim=-1)
+
+                            x = feat_tokens.permute(1, 0, 2) 
                             slots, attn = self.slot_attn(x,return_attn=True) # x: (B, S, 512) # slots: (B, K, 512) # attn: (B, K, S)
                             # self.check_nan(attn, "attn")
 
@@ -306,7 +307,6 @@ class DETRVAE(nn.Module):
 
                             coords = self.spatial_coords  # cached
                             text_vec = F.normalize(text_vec, dim=-1)
-                            coord_embed = F.normalize(coord_embed, dim=-1)
 
                             slot_centroids = torch.einsum("bks,sd->bkd", attn, coords)
                             slot_mass = attn.sum(dim=-1, keepdim=True)
@@ -378,7 +378,7 @@ class DETRVAE(nn.Module):
                     print("src", src.shape, "pos", pos.shape)
                 else:
                     src = torch.cat([text_vec.unsqueeze(0), vis_src], dim=0)  # src.shape = (S_total, B, C)
-                    pos = torch.cat([self.text_pos_embedding.repeat(1,bs,1), vis_pos], dim=0)
+                    # pos = torch.cat([self.text_pos_embedding.repeat(1,bs,1), vis_pos], dim=0)
 
             else:
                 src = torch.cat(all_cam_features, axis=3) # B, C, H, W
