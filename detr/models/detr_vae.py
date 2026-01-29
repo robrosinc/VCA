@@ -12,7 +12,6 @@ import time
 import numpy as np
 import os, logging
 import torch.distributed as dist
-from slot_attention import SlotAttention
 
 import IPython
 e = IPython.embed
@@ -34,6 +33,65 @@ def get_sinusoid_encoding_table(n_position, d_hid):
 
     return torch.FloatTensor(sinusoid_table).unsqueeze(0)
 
+
+class SlotAttention(nn.Module):
+    def __init__(self, dim, num_slots, iters=3, eps=1e-8):
+        super().__init__()
+        self.num_slots = num_slots
+        self.iters = iters
+        self.eps = eps
+
+        self.scale = dim ** -0.5
+
+        self.slots_mu = nn.Parameter(torch.randn(1, num_slots, dim))
+        self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, dim))
+
+        self.to_q = nn.Linear(dim, dim)
+        self.to_k = nn.Linear(dim, dim)
+        self.to_v = nn.Linear(dim, dim)
+
+        self.gru = nn.GRUCell(dim, dim)
+        self.norm_input = nn.LayerNorm(dim)
+        self.norm_slots = nn.LayerNorm(dim)
+        self.norm_mlp = nn.LayerNorm(dim)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, dim * 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(dim * 2, dim)
+        )
+
+    def forward(self, x, return_attn=False):
+        B, N, D = x.shape
+
+        mu = self.slots_mu.expand(B, -1, -1)
+        sigma = self.slots_logsigma.exp().expand(B, -1, -1)
+        slots = mu + sigma * torch.randn_like(mu)
+
+        x = self.norm_input(x)
+        k, v = self.to_k(x), self.to_v(x)
+
+        for _ in range(self.iters):
+            slots_prev = slots
+            slots = self.norm_slots(slots)
+            q = self.to_q(slots)
+
+            attn_logits = torch.einsum("bkd,bnd->bkn", q, k) * self.scale
+            attn = attn_logits.softmax(dim=-1) + self.eps
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+
+            updates = torch.einsum("bkn,bnd->bkd", attn, v)
+
+            slots = self.gru(
+                updates.reshape(-1, D),
+                slots_prev.reshape(-1, D)
+            ).view(B, -1, D)
+
+            slots = slots + self.mlp(self.norm_mlp(slots))
+
+        if return_attn:
+            return slots, attn
+        return slots
 
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
