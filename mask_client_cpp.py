@@ -132,7 +132,7 @@ def main(args):
 
     ### Experiment Parameters
     dsr_pose_action_skip = 8
-    gripper_action_skip = 8
+    gripper_action_skip = 10
     record_snapshot = True
     img_name = 'test'
     
