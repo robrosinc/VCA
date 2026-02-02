@@ -134,7 +134,7 @@ class DETRVAE(nn.Module):
                 self.text_encoder = text_encoder
                 self.input_proj_text = nn.Linear(text_encoder.output_dim, hidden_dim)
                 # self.text_pos_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-                self.num_slots = 6 # TODO tune
+                self.num_slots = 10 # TODO tune
                 self.use_slot_attention = True
                 self.slot_attn = SlotAttention(
                     dim=hidden_dim,
@@ -356,12 +356,12 @@ class DETRVAE(nn.Module):
                             text_vec = self.input_proj_text(masked_text_feat)
                             text_vec = F.normalize(text_vec, dim=-1)
 
-                            x = feat_tokens.permute(1, 0, 2) 
+                            x = feat_tokens.permute(1, 0, 2)
                             slots, attn = self.slot_attn(x,return_attn=True) # x: (B, S, 512) # slots: (B, K, 512) # attn: (B, K, S)
                             # self.check_nan(attn, "attn")
 
                             presence_logits = self.presence_head(slots)  # (B, K, 1)
-                            presence = torch.sigmoid(presence_logits)   
+                            presence = torch.sigmoid(presence_logits)
 
                             coords = self.spatial_coords  # cached
                             text_vec = F.normalize(text_vec, dim=-1)
@@ -433,7 +433,7 @@ class DETRVAE(nn.Module):
                     src = torch.cat([slot_src, vis_src], dim=0)  # src.shape = (S_total, B, C)
                     pos = torch.cat([slot_pos, vis_pos], dim=0)  # pos.shape = (S_total, B, C)
 
-                    print("src", src.shape, "pos", pos.shape)
+                    # print("src", src.shape, "pos", pos.shape)
                 else:
                     src = torch.cat([text_vec.unsqueeze(0), vis_src], dim=0)  # src.shape = (S_total, B, C)
                     # pos = torch.cat([self.text_pos_embedding.repeat(1,bs,1), vis_pos], dim=0)
