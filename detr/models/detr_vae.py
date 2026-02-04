@@ -118,7 +118,6 @@ class DETRVAE(nn.Module):
         self.use_depth = args.use_depth
         self.use_masks = args.use_masks
         self.use_text = args.use_text
-        self.use_slot_attention = False
         hidden_dim = transformer.d_model
         self.action_head = nn.Linear(hidden_dim, args.action_dim)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
@@ -132,31 +131,9 @@ class DETRVAE(nn.Module):
                 self.mask_backbones = nn.ModuleList(mask_backbones)
             elif text_encoder is not None:
                 self.text_encoder = text_encoder
-                self.input_proj_text = nn.Linear(text_encoder.output_dim, hidden_dim)
-                # self.text_pos_embedding = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-                self.num_slots = 10 # TODO tune
-                self.use_slot_attention = True
-                self.slot_attn = SlotAttention(
-                    dim=hidden_dim,
-                    num_slots=self.num_slots,
-                    iters=3
-                )
-                self.spatial_coords = None  # cache for spatial coordinates
-                self.coord_mlp = nn.Sequential(
-                    nn.Linear(2, hidden_dim),
-                    nn.ReLU(inplace=True),
-                    nn.Linear(hidden_dim, hidden_dim)
-                )
-                self.slot_pos_mlp = nn.Sequential(
-                    nn.Linear(2, hidden_dim),
-                    nn.ReLU(inplace=True),
-                    nn.Linear(hidden_dim, hidden_dim)
-                )
-                self.presence_head = nn.Sequential(
-                    nn.Linear(hidden_dim, hidden_dim // 2),
-                    nn.ReLU(inplace=True),
-                    nn.Linear(hidden_dim // 2, 1)
-                )
+                self.alpha = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+                self.heat_proj = nn.Linear(1, hidden_dim)
+                self.beta = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
         else:
             # input_dim = 14 + 7 # robot_state + env_state
             self.input_proj_robot_state = nn.Linear(self.state_dim*self.num_robot_observations, hidden_dim)
@@ -313,9 +290,6 @@ class DETRVAE(nn.Module):
             # Image observation features and position embeddings
             all_cam_features = []
             all_cam_pos = []
-            text_vec = None
-            slot_tokens = []
-            slot_pos_tokens = []
             for i in range(len(self.backbones)):
                 for t in range(self.num_image_observations):
                     features, pos = self.backbones[i](image[:, i, t])
@@ -323,69 +297,28 @@ class DETRVAE(nn.Module):
                     pos = pos[0]            # (B, C, H, W)
 
                     features = self.input_proj(features)
-
                     if self.use_text:
-                        # ---- flatten vision immediately ----
                         B, C, H, W = features.shape
+                        out = self.text_encoder(image[:, i, t], input_ids[:,t,0], input_ids[:,t,1], input_ids[:,t,2])
+                        heat_flat = out['heatmap_logits'].view(B, 1, H * W)
+                        attn = torch.softmax(heat_flat, dim=-1)             # (B,1,160)
+                        attn_map = attn.view(B, 1, H, W)                    # (B,1,8,20)
 
+                        if i ==0:
+                            feat_gated = features * (1.0 + self.alpha * attn_map)   # (B,512,8,20)
+                            tokens = feat_gated.flatten(2).transpose(1, 2) # (B, 160, 512)
+                            heat_tok_in = heat_flat.transpose(1,2) 
+                            heat_tok = self.heat_proj(heat_tok_in)             # (B, 160, 512)
+                            tokens = tokens + self.beta * heat_tok
+                            all_cam_features.append(tokens.permute(1,0,2))  # (HW, B, C)
+                            all_cam_pos.append(pos.flatten(2).permute(2, 0, 1))      # (HW, 1, C)
+                            continue
+                        
                         feat_tokens = features.flatten(2).permute(2, 0, 1)  # (HW, B, C)
-                        pos_tokens  = pos.flatten(2).permute(2, 0, 1)       # (HW, B, C)
-
+                        pos_tokens  = pos.flatten(2).permute(2, 0, 1)       # (HW, 1, C)
                         all_cam_features.append(feat_tokens)
                         all_cam_pos.append(pos_tokens)
 
-                        if self.spatial_coords is None or self.spatial_coords.shape[0] != H * W:
-                            y, x = torch.meshgrid(
-                                torch.linspace(-1, 1, H, device=features.device),
-                                torch.linspace(-1, 1, W, device=features.device),
-                                indexing="ij"
-                            )
-                            coords = torch.stack([x, y], dim=-1).view(-1, 2)
-                            self.spatial_coords = coords
-
-                        if i == 0:
-                            text_feat = self.text_encoder(
-                                input_ids[:, t],
-                                attention_mask=attention_mask[:, t]
-                            )
-                            # print("text_feat", text_feat.shape)
-                            text_mask = attention_mask[:, t].unsqueeze(-1)
-                            denom = text_mask.sum(dim=1).clamp(min=1)
-                            masked_text_feat = (text_feat * text_mask).sum(dim=1) / denom
-                            # print("text_vec", text_vec.shape)
-                            text_vec = self.input_proj_text(masked_text_feat)
-                            text_vec = F.normalize(text_vec, dim=-1)
-
-                            x = feat_tokens.permute(1, 0, 2)
-                            slots, attn = self.slot_attn(x,return_attn=True) # x: (B, S, 512) # slots: (B, K, 512) # attn: (B, K, S)
-                            # self.check_nan(attn, "attn")
-
-                            presence_logits = self.presence_head(slots)  # (B, K, 1)
-                            presence = torch.sigmoid(presence_logits)
-
-                            coords = self.spatial_coords  # cached
-                            text_vec = F.normalize(text_vec, dim=-1)
-
-                            slot_centroids = torch.einsum("bks,sd->bkd", attn, coords)
-                            slot_mass = attn.sum(dim=-1, keepdim=True)
-                            slot_centroids = slot_centroids / (slot_mass + 1e-6)
-
-                            coord_embed = self.coord_mlp(slot_centroids)  # (B, K, D)
-                            scores = torch.einsum("bd,bkd->bk", text_vec, coord_embed) + torch.log(presence.squeeze(-1) + 1e-6)
-                            selected_idx = scores.argmax(dim=-1)
-                            selected_slot = slots[torch.arange(B), selected_idx]
-
-                            batch_idx = torch.arange(B, device=slots.device)
-                            selected_slot = slots[batch_idx, selected_idx]
-                            selected_centroids = slot_centroids[batch_idx, selected_idx]
-                            selected_slot_pe = self.slot_pos_mlp(selected_centroids)
-
-                            slot_token = selected_slot.unsqueeze(0)  # (1, B, C)
-                            slot_pos = selected_slot_pe.unsqueeze(0)  # (1, B, C)
-
-                            slot_tokens.append(slot_token)
-                            slot_pos_tokens.append(slot_pos)
-                            # print("slot_tokens", slot_token.shape, "slot_pos_tokens", slot_pos.shape)
                     else:
                         # ---- keep 4D ----
                         all_cam_features.append(features)
@@ -421,22 +354,8 @@ class DETRVAE(nn.Module):
             # print(all_cam_pos[0].shape)  # (B, hidden_dim, H, W)
             if self.use_text:
                 # concatenate vision tokens
-                vis_src = torch.cat(all_cam_features, dim=0)  # (S_vis, B, C)
-                vis_pos = torch.cat(all_cam_pos, dim=0).repeat(1, bs, 1)  # (S_vis, B, C)
-
-                if self.use_slot_attention:
-                    # concatenate slot tokens across time
-                    slot_src = torch.cat(slot_tokens, dim=0)  # (T, B, C)
-                    slot_pos = torch.cat(slot_pos_tokens, dim=0) # (T, B, C)
-
-                    # final src: [slots | vision]
-                    src = torch.cat([slot_src, vis_src], dim=0)  # src.shape = (S_total, B, C)
-                    pos = torch.cat([slot_pos, vis_pos], dim=0)  # pos.shape = (S_total, B, C)
-
-                    # print("src", src.shape, "pos", pos.shape)
-                else:
-                    src = torch.cat([text_vec.unsqueeze(0), vis_src], dim=0)  # src.shape = (S_total, B, C)
-                    # pos = torch.cat([self.text_pos_embedding.repeat(1,bs,1), vis_pos], dim=0)
+                src = torch.cat(all_cam_features, dim=0)  # (S_vis, B, C)
+                pos = torch.cat(all_cam_pos, dim=0).repeat(1, bs, 1)  # (S_vis, B, C)
 
             else:
                 src = torch.cat(all_cam_features, axis=3) # B, C, H, W
@@ -574,10 +493,10 @@ def build(args):
                 mask_backbones.append(mask_backbone)
     text_encoder = None
     if args.use_text:
-        # from transformers import AutoTokenizer
-        # tokenizer = AutoTokenizer.from_pretrained('prajjwal1/bert-small')
-        from .bert import build_bert
-        text_encoder = build_bert(args)
+        # from .bert import build_bert
+        # text_encoder = build_bert(args)
+        from .grounding_model import build_grounding_model
+        text_encoder = build_grounding_model(args)
 
     transformer = build_transformer(args)
 
