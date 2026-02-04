@@ -93,13 +93,36 @@ def send_array_recv_dual(array: np.ndarray, meta: dict = {}):
     return mask, text
 
 def send_array_recv_text(array: np.ndarray, meta: dict = {}):
+    """
+    Server returns JSON:
+      {
+        "frame_idx": int,
+        "class_id": int,
+        "text": str,
+        "input_ids": [L ints],
+        "attention_mask": [L ints],
+        "max_length": int,
+        ...
+      }
+    """
     meta.update({'dtype': str(array.dtype), 'shape': array.shape})
     socket.send_multipart([
         json.dumps(meta).encode('utf-8'),
         array.tobytes()
     ])
+
     payload = socket.recv_json()
-    return payload['text']
+
+    # Convert to numpy (int64) for your existing pipeline
+    input_ids = np.asarray(payload.get("input_ids", []), dtype=np.int64)
+    attention_mask = np.asarray(payload.get("attention_mask", []), dtype=np.int64)
+    text = payload.get("text", "")
+
+    # Safety check: ensure 1D
+    if input_ids.ndim != 1 or attention_mask.ndim != 1:
+        raise RuntimeError(f"Bad token shapes: input_ids {input_ids.shape}, attention_mask {attention_mask.shape}")
+
+    return input_ids, attention_mask, text, payload
 
 current_pose_l = None
 current_pose_r = None
@@ -172,7 +195,8 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_120000_seed_10.ckpt')
+    # ckpt_path = os.path.join(ckpt_dir, 'policy_step_20000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'lim_20000.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -372,22 +396,17 @@ def main(args):
             # first_image = cv2.resize(cropped_first_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
 
             if use_text:
-                first_input = first_image[:,:640].copy()
-                first_text = send_array_recv_text(first_input)
-                first_tokenized = tokenizer(
-                    first_text,
-                    return_tensors='pt',
-                    padding='max_length',
-                    truncation=True,
-                    max_length=16
-                )
-                max_seq_length = first_tokenized["input_ids"].shape[1]
+                first_input = first_image[:, :640].copy()
+                ids0, mask0, first_text, _payload = send_array_recv_text(first_input)
 
-                ids0  = first_tokenized["input_ids"].cpu().numpy().squeeze(0).astype(np.int64)
-                mask0 = first_tokenized["attention_mask"].cpu().numpy().squeeze(0).astype(np.int64)
+                # 서버가 보내는 길이를 신뢰 (기본 16)
+                max_seq_length = int(_payload.get("max_length", ids0.shape[0]))
 
-                input_ids_buffer      = np.tile(ids0,  ((num_image_obs - 1) * image_obs_every + 1, 1))   # (T_full, L)
-                attention_mask_buffer = np.tile(mask0, ((num_image_obs - 1) * image_obs_every + 1, 1))
+                # (T_full, L)
+                T_full = (num_image_obs - 1) * image_obs_every + 1
+                input_ids_buffer      = np.tile(ids0[None, :],  (T_full, 1))
+                attention_mask_buffer = np.tile(mask0[None, :], (T_full, 1))
+
 
         first_image = rearrange(first_image, 'h w c -> c h w')
 
@@ -517,25 +536,15 @@ def main(args):
                                 mask_obs_history[cam_name][0] = current_mask
 
                         if use_text:
-                            current_input = current_image[:,:640].copy()
-                            current_text = send_array_recv_text(current_input)
-                            current_tokenized = tokenizer(
-                                current_text,
-                                return_tensors='pt',
-                                padding='max_length',
-                                truncation=True,
-                                max_length=16
-                            )
+                            current_input = current_image[:, :640].copy()
+                            ids_t, mask_t, current_text, _payload = send_array_recv_text(current_input)
 
                             if num_image_obs > 1:
                                 input_ids_buffer[1:]      = input_ids_buffer[:-1]
                                 attention_mask_buffer[1:] = attention_mask_buffer[:-1]
-                                
-                            ids_t  = current_tokenized["input_ids"].cpu().numpy().squeeze(0).astype(np.int64)
-                            mask_t = current_tokenized["attention_mask"].cpu().numpy().squeeze(0).astype(np.int64)
+
                             input_ids_buffer[0]      = ids_t
                             attention_mask_buffer[0] = mask_t
-                                
                         # current_image = cv2.resize(cropped_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
 
                     # current_image = rearrange(image_recorder.get_images()[cam_name], 'h w c -> c h w')

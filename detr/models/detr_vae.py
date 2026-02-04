@@ -71,7 +71,7 @@ class DETRVAE(nn.Module):
             elif text_encoder is not None:
                 self.text_encoder = text_encoder
                 self.input_proj_text = nn.Linear(text_encoder.output_dim, hidden_dim)
-                self.num_slots = 6 # TODO tune
+                self.num_slots = 10 # TODO tune
                 self.slot_query = nn.Parameter(torch.randn(self.num_slots, hidden_dim))
                 self.slot_proj = nn.Linear(hidden_dim, hidden_dim)
                 self.slot_norm = nn.LayerNorm(hidden_dim)
