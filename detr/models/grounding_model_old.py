@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time
 
 
 def make_xy_pos_grid(h: int, w: int, device=None, dtype=torch.float32) -> torch.Tensor:
@@ -117,91 +118,74 @@ class GroundingModel(nn.Module):
         # register pos grid as buffer (created lazily in forward if device changes)
         self.register_buffer("_pos_grid", torch.empty(0), persistent=False)
 
+        self.cross_attn_ln = nn.LayerNorm(d_model)
+        self.cross_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, batch_first=True)
+        self.feat_proj = nn.Conv2d(512, d_model, kernel_size=1)
+        self.out_proj = nn.Conv2d(d_model, 512, kernel_size=1)
+
     def _get_pos_grid(self, device, dtype) -> torch.Tensor:
         if self._pos_grid.numel() == 0 or self._pos_grid.device != device or self._pos_grid.dtype != dtype:
             self._pos_grid = make_xy_pos_grid(self.H, self.W, device=device, dtype=dtype)  # (1,2,H,W)
         return self._pos_grid
-
+    
     def forward(
         self,
-        img: torch.Tensor,                  # (B,3,240,640)
-        color_id: torch.Tensor,             # (B,) int64
-        left_ord_id: torch.Tensor,          # (B,) int64
-        right_ord_id: torch.Tensor,         # (B,) int64
-        return_aux: bool = False,
-    ) -> Dict[str, torch.Tensor]:
-        B = img.shape[0]
-        device = img.device
-        dtype = img.dtype
+        feat: torch.Tensor,          # (B,512,8,20)
+        pos: torch.Tensor,           # (B,1,8,20) or (1,1,8,20)
+        color_id: torch.Tensor,      # (B,)
+        left_ord_id: torch.Tensor,   # (B,)
+        right_ord_id: torch.Tensor,  # (B,)
+    ) -> torch.Tensor:
+        start_time = time.time()
+        B, C, H, W = feat.shape
+        assert (H, W) == (8, 20)
+        # feat = self.feat_proj(feat)
+        # 1) add positional encoding
+        x = feat + pos               # (B,512,8,20)
 
-        # 1) backbone feature
-        f = self.backbone(img)  # (B,5,H,W) expected (8,20)
-        if f.shape[-2:] != (self.H, self.W):
-            raise ValueError(f"Backbone output grid {f.shape[-2:]} != expected {(self.H, self.W)}")
+        # tokenize
+        z0 = x.flatten(2).transpose(1, 2)  # (B,N,512), N=H*W
 
-        # 2) objectness gating
-        m_logits = self.obj_head(f)          # (B,1,H,W)
-        m_logits = m_logits.clamp(-10, 10)
-        m = torch.sigmoid(m_logits)          # (B,1,H,W)
-        f_g = f * m                          # (B,5,H,W)
-
-        # 3) concat position
-        pos = self._get_pos_grid(device=device, dtype=dtype).expand(B, -1, -1, -1)  # (B,2,H,W)
-        h = torch.cat([f_g, pos], dim=1)     # (B,7,H,W)
-
-        # 4) project to d_model and tokenize
-        u = self.proj(h)                     # (B,d_model,H,W)
-        z0 = u.flatten(2).transpose(1, 2)    # (B, N, d_model) where N=H*W
-
-        # 5) self-attention block (pre-norm style)
-        # Self-attn
+        # 2) self-attention over spatial tokens
         z1 = self.self_attn_ln(z0)
-        attn_out, attn_w = self.self_attn(z1, z1, z1, need_weights=False)  # (B,N,d_model)
-        z = z0 + attn_out
+        sa_out, _ = self.self_attn(z1, z1, z1, need_weights=False)
+        z = z0 + sa_out
 
-        # FFN
         z2 = self.self_attn_ff_ln(z)
-        z = z + self.self_attn_ff(z2)        # (B,N,d_model)
+        z = z + self.self_attn_ff(z2)       # (B,N,512)
 
-        # 6) text tokens (no mixing)
-        t_color = self.emb_color(color_id)       # (B,d_model)
-        t_left = self.emb_left(left_ord_id)      # (B,d_model)
-        t_right = self.emb_right(right_ord_id)   # (B,d_model)
-        t = torch.stack([t_color, t_left, t_right], dim=1)  # (B,3,d_model)
+        # 3) text / id tokens
+        t_color = self.emb_color(color_id)       # (B,512)
+        t_left  = self.emb_left(left_ord_id)     # (B,512)
+        t_right = self.emb_right(right_ord_id)   # (B,512)
 
-        # 7) per-token scoring maps
-        k = self.k_proj(z)  # (B,N,score_dim)
+        t = torch.stack([t_color, t_left, t_right], dim=1)  # (B,3,512)
 
-        maps = []
-        for i in range(3):
-            q = self.q_proj[i](t[:, i, :])       # (B,score_dim)
-            # dot-product score: (B,N)
-            s = torch.einsum("bd,bnd->bn", q, k) / math.sqrt(self.score_dim)
-            S = s.view(B, 1, self.H, self.W)     # (B,1,H,W)
-            maps.append(S)
+        # 4) cross-attention: text queries → spatial tokens
+        # queries = text, keys/values = spatial tokens
+        t_ln = self.cross_attn_ln(t)
 
-        S_color, S_left, S_right = maps
+        cross_out, _ = self.cross_attn(
+            query=t_ln,    # (B,3,512)
+            key=z,         # (B,N,512)
+            value=z,       # (B,N,512)
+            need_weights=False,
+        )
 
-        # 8) weighted sum combine (stable)
-        w = torch.softmax(self.map_weights, dim=0)  # (3,)
-        S_logits = w[0] * S_color + w[1] * S_left + w[2] * S_right  # (B,1,H,W)
-        S_logits = S_logits.clamp(-50, 50)
+        # aggregate text influence (mean / sum both work)
+        t_context = cross_out.mean(dim=1)        # (B,512)
 
-        out = {
-            "heatmap_logits": S_logits,  # (B,1,8,20)
-        }
+        # 5) inject text context back into spatial tokens
+        z = z + t_context[:, None, :]             # broadcast to (B,N,512)
 
-        if return_aux:
-            out.update({
-                "mask_logits": m_logits,  # (B,1,8,20)
-                "mask_prob": m,           # (B,1,8,20)
-                "map_color": S_color,
-                "map_left": S_left,
-                "map_right": S_right,
-                "combine_weights": w.detach().clone(),
-            })
+        # 6) detokenize to dense feature
+        dense_feat = z.transpose(1, 2).view(B, self.d_model, H, W)
+        # dense_feat = self.out_proj(dense_feat)    # (B,512,8,20)
 
-        return out
+        end_time=   time.time()
+        print(f"GroundingModel forward time: {end_time - start_time:.4f} sec")
+
+        return dense_feat
 
 def build_grounding_model(args) -> GroundingModel:
     model = GroundingModel(
