@@ -10,6 +10,7 @@ from time import time
 from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
 import torchvision.transforms as transforms
 from scipy.spatial.transform import Rotation
+import zlib
 
 import IPython
 
@@ -56,7 +57,6 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.separate_left_right = False
         self.img_downsample = True
         self.img_downsample_size = (240, 640) # (180, 640) or (240, 640)
-        # self.img_downsample_size = (256, 512)
 
         self.img_debug = False
 
@@ -66,7 +66,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
 
         self.relative_action_mode = False
         self.relative_obs_mode = False
-        self.relative_inter_gripper_proprio = False
+        self.relative_inter_gripper_proprio = True
 
         self.__getitem__(0)  # initialize self.is_sim and self.transformations
         self.is_sim = False
@@ -96,7 +96,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 except:
                     is_sim = False
 
-                compressed = "compressed_image_len" in root
+                compressed = root.attrs.get("compress", False)
 
                 num_robots = int(root["/actions/pose"].shape[1] / 6)
 
@@ -222,59 +222,75 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 img_sampling_np = np.array(img_sampling)
                 unique_indices, inverse_indices = np.unique(img_sampling_np, return_inverse=True)
 
+                for cam_name in self.camera_names:
+                    image_dict[cam_name] = np.array(
+                        root[f"/observations/images/{cam_name}"]
+                    )[img_sampling]
+                    if self.use_masks and cam_name == "head_camera":
+                        if "/observations/masks" in root:
+                            if f"{cam_name}_masks" in root["/observations/masks"]:
+                                mask_dict[cam_name] = np.expand_dims(np.array(
+                                    root[f"/observations/masks/{cam_name}_masks"]
+                                )[img_sampling][:,:,:], axis=1)
+                                # print("raw obs/masks/head_masks: ", mask_dict[cam_name].shape)
+                            elif cam_name in root["/observations/masks"]:
+                                unique_compressed = root[f"/observations/masks/{cam_name}"][unique_indices]
+                                # print("raw obs/masks/head:", unique_compressed.shape)
+                                decompressed_masks_unique = [
+                                    np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
+                                    for entry in unique_compressed
+                                ]
+                                decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                                # print("resized obs/masks/head:", np.array(decompressed_masks).shape)
+                                mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+                        else:
+                            if cam_name in root["/prompts/masks"]:
+                                unique_compressed = root[f"/prompts/masks/{cam_name}"][unique_indices]
+                                decompressed_masks_unique = [
+                                    np.frombuffer(zlib.decompress(entry), dtype=np.uint8).reshape(480, 640)
+                                    for entry in unique_compressed
+                                ]
+                                decompressed_masks = [decompressed_masks_unique[i] for i in inverse_indices]
+                                # print("prompts/masks (resized):", np.array(decompressed_masks).shape)
+                                mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
+                            else:
+                                raise KeyError("No valid mask dataset found for head_camera")
+                        resized_masks = []
+                        for mask in mask_dict[cam_name]:
+                            resized_mask = cv2.resize(mask[0], (self.img_downsample_size[1], self.img_downsample_size[0]), interpolation=cv2.INTER_LINEAR)
+                            resized_masks.append(resized_mask)
+            
+                        # Stack the resized masks and add a new dimension
+                        mask_dict[cam_name] = np.expand_dims(np.stack(resized_masks, axis=0), axis=1)
+
+                # print("here", mask_dict['head_camera'].shape) # 2 1 240 640
+                t3 = time()
                 if compressed:
-                    for cam_name in self.camera_names:
-                        compressed_imgs = np.array(root[f"/observations/images/{cam_name}"])[img_sampling]
+                    for cam_name in image_dict.keys():
+                        decompressed_image_array = []
+                        for i in range(len(image_dict[cam_name])):
+                            decompressed_image = cv2.imdecode(
+                                image_dict[cam_name][i], 1
+                            )
+                            # cv2.imshow('decoding', decompressed_image)
+                            # cv2.waitKey()
+                            decompressed_image_array.append(decompressed_image)
+                        image_dict[cam_name] = np.array(decompressed_image_array)
+                        # print('image_dict[cam_name].shape', image_dict[cam_name].shape)
+                t4 = time()
 
-                        decompressed = []
-                        for encoded in compressed_imgs:
-                            decompressed.append(cv2.imdecode(encoded, cv2.IMREAD_COLOR))
-                        image_dict[cam_name] = np.array(decompressed) # k H W C
-                    
                 if self.use_masks:
-                    cam_name = "head_camera"  # only one camera needs masks
-
-                    if f"{cam_name}" not in root["/prompts/masks"]:
-                        raise KeyError(f"/prompts/masks/{cam_name} does not exist in the file.")
-
-                    compressed_masks_all = root[f"/prompts/masks/{cam_name}"][()]  # list of zlib bytes
-
-                    # Select using unique_indices → reorder with inverse_indices
-                    compressed_masks_unique = compressed_masks_all[unique_indices]
-
-                    # Decompress
-                    decompressed_unique = [
-                        np.frombuffer(zlib.decompress(blob), dtype=np.uint8).reshape(480, 640)
-                        for blob in compressed_masks_unique
-                    ]
-
-                    # Reorder to match the sampled image order
-                    decompressed_masks = []
-                    for i in inverse_indices:
-                        m = decompressed_unique[i].copy()
-                        m[:, :320] = 0       # zero-out left region here
-                        decompressed_masks.append(m)
-
-                    # Final mask: (T, 1, H, W)
-                    mask_dict[cam_name] = np.expand_dims(np.stack(decompressed_masks, axis=0), axis=1)
-                    # print("Mask unique values:", np.unique(mask_dict['head_camera']))
-                    # print("here", mask_dict['head_camera'].shape) # 2 1 480 640
-
-                    # all_cam_masks = []
-                    # for cam_name in self.camera_names:
-                    #     if cam_name =='head_camera':
-                    #         cropped_mask = mask_dict[cam_name][:,:,:,320:640]
-                    #         for t in range(len(mask_dict[cam_name])):
-                    #             mask_dict[cam_name][t] = cropped_mask[t]
-                    #         all_cam_masks.append(mask_dict[cam_name])
-                    # all_cam_masks = np.stack(all_cam_masks, axis=0)
-                    # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 480 640
-                    mask_np = mask_dict['head_camera']         
-                    mask_np = np.expand_dims(mask_np, axis=0)  
-                    mask_data = torch.from_numpy(mask_np)      
-                    mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
-                    mask_data = mask_data.float()
-                    mask_data = mask_data / 255.0  
+                    all_cam_masks = []
+                    for cam_name in self.camera_names:
+                        if cam_name =='head_camera':
+                            cropped_mask = mask_dict[cam_name][:,:,:,:640]
+                            for t in range(len(mask_dict[cam_name])):
+                                mask_dict[cam_name][t] = cropped_mask[t]
+                            all_cam_masks.append(mask_dict[cam_name])
+                    all_cam_masks = np.stack(all_cam_masks, axis=0)
+                    # print("all_cam_masks", all_cam_masks.shape) # 1 T 1 240 640
+                    mask_data = torch.from_numpy(all_cam_masks).float()
+                    # mask_data = transforms.v2.Resize(size=self.img_downsample_size)(mask_data)
                 else:
                     # Provide a placeholder tensor if masks are not used
                     mask_data = 0
@@ -303,8 +319,9 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     depth_data = 0
 
                 if self.use_text:
-                    input_ids = root['/prompts/text/input_ids'][unique_indices]
-                    attention_mask = root['/prompts/text/attention_mask'][unique_indices]
+                    input_ids = root['/prompts/input_ids2'][unique_indices]
+                    attention_mask = root['/prompts/attention_mask2'][unique_indices]
+
                     input_ids = [input_ids[i] for i in inverse_indices]
                     attention_mask = [attention_mask[i] for i in inverse_indices]
                     # Convert the Python lists to PyTorch tensors
@@ -405,33 +422,30 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 padded_robot_state = padded_robot_state[: self.robot_obs_size]  # discard the last trash data
 
             t6 = time()
-            # cropping optional
+            # new axis for different cameras
             all_cam_images = []
             for cam_name in self.camera_names:
                 if cam_name == 'head_camera':
-                    cropped_img = image_dict[cam_name][:, :, :640, :]     # (T, 480, 640, 3)
-                    # print("1",cropped_img.shape)
-
-                    for t in range(len(cropped_img)):
-                        cropped_img[t][:, :320, :] = 0
-
-                    image_dict[cam_name] = np.stack(cropped_img, axis=0)
-                    # print("2",image_dict[cam_name].shape)
-
-                elif cam_name == 'rhand_camera':
                     resized_frames = []
                     for t in range(len(image_dict[cam_name])):
-                        resized = image_dict[cam_name][t][:,:640,:]
-                        # resized = cv2.resize(
-                        #     image_dict[cam_name][t],
-                        #     dsize=(640, 480),
-                        #     interpolation=cv2.INTER_LINEAR
-                        # )
+                        resized = cv2.resize(image_dict[cam_name][t][:,:640,:], (self.img_downsample_size[1], self.img_downsample_size[0]), interpolation=cv2.INTER_LINEAR)
+                        resized_frames.append(resized)
+
+                    image_dict[cam_name] = np.stack(resized_frames, axis=0)
+                    # print("2",image_dict[cam_name].shape)
+
+                else:
+                    resized_frames = []
+                    for t in range(len(image_dict[cam_name])):
+                        resized = cv2.resize(
+                            image_dict[cam_name][t],
+                            (self.img_downsample_size[1], self.img_downsample_size[0]),
+                            interpolation=cv2.INTER_LINEAR
+                        )
                         resized_frames.append(resized)
                     # print("4",resized_frames[0].shape)
                     image_dict[cam_name] = np.stack(resized_frames, axis=0)
                     # print("5",image_dict[cam_name].shape)
-
                 all_cam_images.append(image_dict[cam_name])
 
             if self.use_depth:
@@ -470,7 +484,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 self.transformations = [
                     # transforms.RandomRotation(degrees=[-5.0, 5.0], expand=False),
                     # transforms.RandomCrop(size=[int(original_size[0] * ratio), int(original_size[1]/2 * ratio)]),
-                    transforms.v2.Resize(size=self.img_downsample_size),
+                    # transforms.v2.Resize(size=self.img_downsample_size),
                     transforms.v2.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5, hue=0.08),
                 ]
 
@@ -546,7 +560,7 @@ def get_norm_stats(dataset_path_list):
     all_state_data = []
     all_action_data = []
     all_episode_len = []
-    relative_inter_gripper_proprio = False
+    relative_inter_gripper_proprio = True
     relative_action_mode = False
     relative_obs_mode = False
 
@@ -697,10 +711,10 @@ def get_norm_stats(dataset_path_list):
         "state_std": state_std.numpy(),
     }
 
-    print(f"action_mean = {action_mean}")
-    print(f"action_std = {action_std}")
-    print(f"state_mean = {state_mean}")
-    print(f"state_std = {state_std}")
+    # print(f"action_mean = {action_mean}")
+    # print(f"action_std = {action_std}")
+    # print(f"state_mean = {state_mean}")
+    # print(f"state_std = {state_std}")
 
     return stats, all_episode_len
 
@@ -845,44 +859,31 @@ def load_data(
         use_masks,
         use_text
     )
-    val_dataset = EpisodicDataset(
-        dataset_path_list,
-        camera_names,
-        norm_stats,
-        val_episode_ids,
-        val_episode_len,
-        chunk_size,
-        robot_obs_size,
-        img_obs_size,
-        img_obs_skip,
-        policy_class,
-        use_depth,
-        use_masks,
-        use_text
-    )
-    train_sampler = DistributedSampler(train_dataset, shuffle=True)
-    val_sampler = DistributedSampler(val_dataset, shuffle=False)
+
+    # train_sampler = DistributedSampler(train_dataset, shuffle=True)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size_train,
-        sampler=train_sampler,
+        shuffle=True,          # <-- IMPORTANT
         pin_memory=True,
-        num_workers=16,
+        num_workers=4,
         prefetch_factor=2,
-        persistent_workers=True, 
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size_val,
-        sampler=val_sampler,
-        pin_memory=True,
-        num_workers=16,
-        prefetch_factor=2,
-        persistent_workers=True, 
+        persistent_workers=True,
     )
 
-    return train_loader, val_loader, train_sampler, val_sampler, norm_stats, train_dataset.is_sim
+    # train_loader = DataLoader(
+    #     train_dataset,
+    #     batch_size=batch_size_train,
+    #     sampler=train_sampler,
+    #     pin_memory=True,
+    #     num_workers=8,
+    #     prefetch_factor=2,
+    #     persistent_workers=True, 
+    # )
+
+    # return train_loader, train_sampler, norm_stats, train_dataset.is_sim
+    return train_loader, norm_stats, train_dataset.is_sim
 
 def compute_dict_mean(epoch_dicts):
     result = {k: None for k in epoch_dicts[0]}
