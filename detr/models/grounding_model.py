@@ -144,14 +144,14 @@ class GroundingModel(nn.Module):
         dense_feat = self.out_proj(z.transpose(1,2).view(B,513,H,W))   # project back to 512
 
         end_time=   time.time()
-        print(f"GroundingModel forward time: {end_time - start_time:.4f} sec")
+        # print(f"GroundingModel forward time: {end_time - start_time:.4f} sec")
 
         return dense_feat
 
 def build_grounding_model(args) -> GroundingModel:
     model = GroundingModel(
-        d_model=32,
-        n_heads=4,
+        d_model=512,
+        n_heads=16,
         score_dim=32,
         n_colors=3,
         n_left_ord=6,

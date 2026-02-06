@@ -12,7 +12,6 @@ import time
 import numpy as np
 import os, logging
 import torch.distributed as dist
-
 import IPython
 e = IPython.embed
 
@@ -296,24 +295,17 @@ class DETRVAE(nn.Module):
                     features = features[0]  # (B, C, H, W)
                     pos = pos[0]            # (B, C, H, W)
 
-                    features = self.input_proj(features)
                     if self.use_text:
                         B, C, H, W = features.shape
-                        out = self.text_encoder(image[:, i, t], input_ids[:,t,0], input_ids[:,t,1], input_ids[:,t,2])
-                        heat_flat = out['heatmap_logits'].view(B, 1, H * W)
-                        attn = torch.softmax(heat_flat, dim=-1)             # (B,1,160)
-                        attn_map = attn.view(B, 1, H, W)                    # (B,1,8,20)
 
                         if i ==0:
-                            feat_gated = features * (1.0 + self.alpha * attn_map)   # (B,512,8,20)
-                            tokens = feat_gated.flatten(2).transpose(1, 2) # (B, 160, 512)
-                            heat_tok_in = heat_flat.transpose(1,2) 
-                            heat_tok = self.heat_proj(heat_tok_in)             # (B, 160, 512)
-                            tokens = tokens + self.beta * heat_tok
-                            all_cam_features.append(tokens.permute(1,0,2))  # (HW, B, C)
+                            out = self.text_encoder(features, pos, input_ids[:,t,0], input_ids[:,t,1], input_ids[:,t,2])
+                            out = self.input_proj_masks(out)
+                            all_cam_features.append(out.flatten(2).permute(2,0,1))  # (HW, B, C)
                             all_cam_pos.append(pos.flatten(2).permute(2, 0, 1))      # (HW, 1, C)
                             continue
-                        
+
+                        features = self.input_proj(features)
                         feat_tokens = features.flatten(2).permute(2, 0, 1)  # (HW, B, C)
                         pos_tokens  = pos.flatten(2).permute(2, 0, 1)       # (HW, 1, C)
                         all_cam_features.append(feat_tokens)

@@ -183,7 +183,7 @@ class GroundingModel(nn.Module):
         # dense_feat = self.out_proj(dense_feat)    # (B,512,8,20)
 
         end_time=   time.time()
-        print(f"GroundingModel forward time: {end_time - start_time:.4f} sec")
+        # print(f"GroundingModel forward time: {end_time - start_time:.4f} sec")
 
         return dense_feat
 

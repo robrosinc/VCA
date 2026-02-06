@@ -40,6 +40,40 @@ def make_policy(policy_class, policy_config):
 def remove_module_prefix(state_dict):
     return {k.replace("module.", "", 1): v for k, v in state_dict.items()}
 
+def load_grounding_ckpt(
+    policy: nn.Module,
+    ckpt_path: str,
+    device,
+    grounding_prefix="grounding",   # policy.grounding.*
+    freeze=True,
+):
+    ckpt = torch.load(ckpt_path, map_location=device)
+    state_dict = ckpt.get("model_state", ckpt)
+
+    # remove 'module.' if exists
+    state_dict = {
+        k.replace("module.", "", 1): v
+        for k, v in state_dict.items()
+    }
+
+    # filter only grounding module
+    filtered = {}
+    for k, v in state_dict.items():
+        if k.startswith(f"model."+"{grounding_prefix}."):
+            filtered[k] = v
+
+    missing, unexpected = policy.load_state_dict(filtered, strict=False)
+
+    print(f"[GroundingModel load]")
+    print(f"  loaded keys     : {len(filtered)}")
+    print(f"  missing keys    : {len(missing)}")
+    print(f"  unexpected keys : {len(unexpected)}")
+
+    # freeze grounding
+    if freeze:
+        for name, param in policy.named_parameters():
+            if name.startswith(grounding_prefix + "."):
+                param.requires_grad = False
 
 def train(args):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -202,6 +236,7 @@ def train(args):
             "latent_out_proj",
             "backbones",
             "input_proj",
+            "input_proj_masks",
         ]
 
         # Filter only keys matching the prefixes
@@ -218,13 +253,17 @@ def train(args):
 
         # Freeze pretrained layers, but leave latent_out_proj trainable
         for name, param in policy.named_parameters():
-            if any(name.startswith(prefix) for prefix in pretrained_prefixes) and not name.startswith("latent_out_proj") and not name.startswith("input_proj"):
+            if any(name.startswith(prefix) for prefix in pretrained_prefixes):
                 param.requires_grad = False  # freeze pretrained
             else:
                 param.requires_grad = True
 
-    n_trainable = sum(p.numel() for p in policy.model.text_encoder.parameters() if p.requires_grad)
-    print("Trainable parameters in BERT:", n_trainable)
+    if args.get("grounding_ckpt") is not None:
+        load_grounding_ckpt(policy, args["grounding_ckpt"], device)
+
+    # if use_text:
+    #     n_trainable = sum(p.numel() for p in policy.model.text_encoder.parameters() if p.requires_grad)
+    #     print("Trainable parameters in BERT:", n_trainable)
                 
     optimizer = policy.configure_optimizers(lr_backbone, args['lr'], 1e-4)
 
@@ -490,6 +529,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_encoder", action="store_true")
     parser.add_argument("--pretrained_encoder_path", action="store", type=str, help="Path to pretrained encoder")
     parser.add_argument("--freeze_encoder", action="store_true")
+    parser.add_argument("--grounding_ckpt", type=str, default=None)
 
     args = vars(parser.parse_args())
 

@@ -16,6 +16,33 @@ import IPython
 
 e = IPython.embed
 
+def numeric_to_tuple(vec):
+    vec = np.asarray(vec)
+
+    if vec.shape != (14,):
+        raise ValueError(f"numeric2 must have shape (14,), got {vec.shape}")
+
+    d1 = d2 = d3 = 0
+
+    # first digit
+    if vec[0] == 1:
+        d1 = 1
+    elif vec[1] == 1:
+        d1 = 2
+
+    # second digit
+    for i in range(2, 8):
+        if vec[i] == 1:
+            d2 = i - 2
+            break
+
+    # third digit
+    for i in range(8, 14):
+        if vec[i] == 1:
+            d3 = i - 8
+            break
+
+    return [d1, d2, d3]
 
 def flatten_list(l):
     return [item for sublist in l for item in sublist]
@@ -319,20 +346,24 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     depth_data = 0
 
                 if self.use_text:
-                    use_prompt2 = (index % 2 == 1)
-
-                    if use_prompt2:
-                        input_ids = root['/prompts/input_ids2'][unique_indices]
-                        attention_mask = root['/prompts/attention_mask2'][unique_indices]
-                    else:
-                        input_ids = root['/prompts/input_ids'][unique_indices]
-                        attention_mask = root['/prompts/attention_mask'][unique_indices]
-
-                    input_ids = [input_ids[i] for i in inverse_indices]
-                    attention_mask = [attention_mask[i] for i in inverse_indices]
-                    # Convert the Python lists to PyTorch tensors
+                    input_ids = root['/prompts/input_ids2'][unique_indices]
+                    input_ids = [numeric_to_tuple(input_ids[i]) for i in inverse_indices]
                     input_ids = torch.stack([torch.tensor(x) for x in input_ids])
-                    attention_mask = torch.stack([torch.tensor(x) for x in attention_mask])
+
+                    # use_prompt2 = (index % 2 == 1)
+
+                    # if use_prompt2:
+                    #     input_ids = root['/prompts/input_ids2'][unique_indices]
+                    #     attention_mask = root['/prompts/attention_mask2'][unique_indices]
+                    # else:
+                    #     input_ids = root['/prompts/input_ids'][unique_indices]
+                    #     attention_mask = root['/prompts/attention_mask'][unique_indices]
+
+                    # input_ids = [input_ids[i] for i in inverse_indices]
+                    # attention_mask = [attention_mask[i] for i in inverse_indices]
+                    # # Convert the Python lists to PyTorch tensors
+                    # input_ids = torch.stack([torch.tensor(x) for x in input_ids])
+                    # attention_mask = torch.stack([torch.tensor(x) for x in attention_mask])
 
                 else:
                     # Provide a placeholder tensor when text is not used
