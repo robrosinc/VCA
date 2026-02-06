@@ -48,31 +48,24 @@ def load_grounding_ckpt(
     freeze=True,
 ):
     ckpt = torch.load(ckpt_path, map_location=device)
-    state_dict = ckpt.get("model_state", ckpt)
+    state_dict = ckpt.get("state_dict", ckpt)
 
-    # remove 'module.' if exists
-    state_dict = {
-        k.replace("module.", "", 1): v
-        for k, v in state_dict.items()
-    }
+    NEW_PREFIX = "model.text_encoder."
 
-    # filter only grounding module
-    filtered = {}
+    remapped = {}
     for k, v in state_dict.items():
-        if k.startswith(f"model."+"{grounding_prefix}."):
-            filtered[k] = v
-
-    missing, unexpected = policy.load_state_dict(filtered, strict=False)
+        remapped[NEW_PREFIX + k] = v
+    missing, unexpected = policy.load_state_dict(remapped, strict=False)
 
     print(f"[GroundingModel load]")
-    print(f"  loaded keys     : {len(filtered)}")
+    print(f"  loaded keys     : {len(remapped)}")
     print(f"  missing keys    : {len(missing)}")
     print(f"  unexpected keys : {len(unexpected)}")
 
     # freeze grounding
     if freeze:
         for name, param in policy.named_parameters():
-            if name.startswith(grounding_prefix + "."):
+            if name.startswith("model.text_encoder."):
                 param.requires_grad = False
 
 def train(args):

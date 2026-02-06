@@ -133,6 +133,7 @@ class DETRVAE(nn.Module):
                 self.alpha = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
                 self.heat_proj = nn.Linear(1, hidden_dim)
                 self.beta = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+                self.input_proj_masks=nn.Conv2d(512,hidden_dim,kernel_size =1)
         else:
             # input_dim = 14 + 7 # robot_state + env_state
             self.input_proj_robot_state = nn.Linear(self.state_dim*self.num_robot_observations, hidden_dim)
