@@ -349,6 +349,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     input_ids = root['/prompts/numeric2'][unique_indices]
                     input_ids = [numeric_to_tuple(input_ids[i]) for i in inverse_indices]
                     input_ids = torch.stack([torch.tensor(x) for x in input_ids])
+                    attention_mask = torch.tensor(0)
 
                     # use_prompt2 = (index % 2 == 1)
 
