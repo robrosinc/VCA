@@ -58,7 +58,6 @@ def load_grounding_ckpt(
 
     print(f"[GroundingModel load]")
     print(f"  loaded keys     : {len(remapped)}")
-    print(f"  missing keys    : {len(missing)}")
     print(f"  unexpected keys : {len(unexpected)}")
 
 def train(args):
@@ -286,7 +285,7 @@ def train(args):
 
 
         start_step = ckpt.get('step', 0)
-        if 'optim_state' in ckpt:
+        if !use_text and 'optim_state' in ckpt:
             optimizer.load_state_dict(ckpt['optim_state'])
             print(
                 f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}, Step: {start_step}'
