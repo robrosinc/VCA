@@ -44,8 +44,7 @@ def load_grounding_ckpt(
     policy: nn.Module,
     ckpt_path: str,
     device,
-    grounding_prefix="grounding",   # policy.grounding.*
-    freeze=True,
+    grounding_prefix="text_encoder",
 ):
     ckpt = torch.load(ckpt_path, map_location=device)
     state_dict = ckpt.get("state_dict", ckpt)
@@ -61,12 +60,6 @@ def load_grounding_ckpt(
     print(f"  loaded keys     : {len(remapped)}")
     print(f"  missing keys    : {len(missing)}")
     print(f"  unexpected keys : {len(unexpected)}")
-
-    # freeze grounding
-    if freeze:
-        for name, param in policy.named_parameters():
-            if name.startswith("model.text_encoder."):
-                param.requires_grad = False
 
 def train(args):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -262,7 +255,7 @@ def train(args):
 
     is_wandb = is_wandb
     if is_wandb:
-        expr_name = ckpt_dir.split("/")[-1]
+        expr_name = "final-stretch" #ckpt_dir.split("/")[-1]
         wandb.init(
             project="blocksort-text",
             reinit=True,
@@ -303,6 +296,31 @@ def train(args):
 
     else:
         start_step = 0
+
+    cvae_prefixes = [ "encoder", "encoder_action_proj", "encoder_joint_proj", "cls_embed", "pos_table", "latent_proj", "latent_out_proj" ]
+
+    for name, param in policy.named_parameters():
+        if args.get("freeze_backbones", False) and (
+            name.startswith("backbones") or name=="input_proj"
+        ):
+            param.requires_grad = False
+
+        if args.get("freeze_grounding", False) and (
+            name.startswith("text_encoder") or name.startswith("input_proj_masks")
+        ):
+            param.requires_grad = False
+
+        if args.get("freeze_cvae", False) and any(
+            name.startswith(prefix) for prefix in cvae_prefixes
+        ):
+            param.requires_grad = False
+
+
+    print("============================[Trainable parameters]=============================")           
+    for name, param in policy.named_parameters():
+        if param.requires_grad:
+            print(name)
+
     step_per_epoch = len(train_loader)
     print(f'step_per_epoch: {step_per_epoch}')
     total_steps = args['num_steps']
@@ -521,8 +539,11 @@ if __name__ == "__main__":
     parser.add_argument("--vq_dim", action="store", type=int, help="vq_dim")
     parser.add_argument("--no_encoder", action="store_true")
     parser.add_argument("--pretrained_encoder_path", action="store", type=str, help="Path to pretrained encoder")
-    parser.add_argument("--freeze_encoder", action="store_true")
     parser.add_argument("--grounding_ckpt", type=str, default=None)
+
+    parser.add_argument("--freeze_backbones", action="store_true")
+    parser.add_argument("--freeze_grounding", action="store_true")
+    parser.add_argument("--freeze_cvae", action="store_true")
 
     args = vars(parser.parse_args())
 
