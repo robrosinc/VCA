@@ -314,6 +314,7 @@ class DETRVAE(nn.Module):
 
                     else:
                         # ---- keep 4D ----
+                        features = self.input_proj(features)
                         all_cam_features.append(features)
                         all_cam_pos.append(pos)
 

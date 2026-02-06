@@ -16,7 +16,7 @@ TASK_CONFIGS = {
     },
     'blocksort_text':{
         'dataset_dir': DATA_DIR,
-        'episode_len': 1700,
+        'episode_len': 3000,
         'train_ratio': 0.99,
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],
         'robot_id_list': ['dsr_l', 'dsr_r'],

@@ -131,8 +131,8 @@ def main(args):
     inference_batch = 1
 
     ### Experiment Parameters
-    dsr_pose_action_skip = 8
-    gripper_action_skip = 10
+    dsr_pose_action_skip = 3
+    gripper_action_skip = 4
     record_snapshot = True
     img_name = 'test'
     
@@ -148,7 +148,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_400000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_20000_seed_10.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -554,18 +554,19 @@ def main(args):
 
                     # Restore original shape
                     cam_images = cam_images.view(B, K, T, C, target_h, target_w)
-                    B, K, T, C, H, W = cam_masks.shape
-                    cam_masks = cam_masks.view(B * K * T, C, H, W)
+                    if use_masks:
+                        B, K, T, C, H, W = cam_masks.shape
+                        cam_masks = cam_masks.view(B * K * T, C, H, W)
 
-                    cam_masks = F.interpolate(
-                        cam_masks,
-                        size=(target_h, target_w),  # New H, W
-                        mode='bilinear',
-                        align_corners=False
-                    )
+                        cam_masks = F.interpolate(
+                            cam_masks,
+                            size=(target_h, target_w),  # New H, W
+                            mode='bilinear',
+                            align_corners=False
+                        )
 
-                    # Restore original shape
-                    cam_masks = cam_masks.view(B, K, T, C, target_h, target_w)
+                        # Restore original shape
+                        cam_masks = cam_masks.view(B, K, T, C, target_h, target_w)
 
 
                 t2 = time.time()
