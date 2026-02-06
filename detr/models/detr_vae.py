@@ -290,6 +290,8 @@ class DETRVAE(nn.Module):
             # Image observation features and position embeddings
             all_cam_features = []
             all_cam_pos = []
+            text_features = None
+            text_pos = None
             for i in range(len(self.backbones)):
                 for t in range(self.num_image_observations):
                     features, pos = self.backbones[i](image[:, i, t])
@@ -302,8 +304,8 @@ class DETRVAE(nn.Module):
                         if i ==0:
                             out = self.text_encoder(features, pos, input_ids[:,t,0], input_ids[:,t,1], input_ids[:,t,2])
                             out = self.input_proj_masks(out)
-                            all_cam_features.append(out.flatten(2).permute(2,0,1))  # (HW, B, C)
-                            all_cam_pos.append(pos.flatten(2).permute(2, 0, 1))      # (HW, 1, C)
+                            text_features = out.flatten(2).permute(2,0,1)  # (HW, B, C)
+                            text_pos = pos.flatten(2).permute(2, 0, 1)      # (HW, 1, C)
                             continue
 
                         features = self.input_proj(features)
@@ -347,6 +349,8 @@ class DETRVAE(nn.Module):
                         del features, pos
             # print(all_cam_pos[0].shape)  # (B, hidden_dim, H, W)
             if self.use_text:
+                all_cam_features.append(text_features)
+                all_cam_pos.append(text_pos)
                 # concatenate vision tokens
                 src = torch.cat(all_cam_features, dim=0)  # (S_vis, B, C)
                 pos = torch.cat(all_cam_pos, dim=0).repeat(1, bs, 1)  # (S_vis, B, C)
