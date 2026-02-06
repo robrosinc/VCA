@@ -346,7 +346,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     depth_data = 0
 
                 if self.use_text:
-                    input_ids = root['/prompts/input_ids2'][unique_indices]
+                    input_ids = root['/prompts/numeric2'][unique_indices]
                     input_ids = [numeric_to_tuple(input_ids[i]) for i in inverse_indices]
                     input_ids = torch.stack([torch.tensor(x) for x in input_ids])
 
