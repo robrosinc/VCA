@@ -16,6 +16,33 @@ import IPython
 
 e = IPython.embed
 
+def numeric_to_tuple(vec):
+    vec = np.asarray(vec)
+
+    if vec.shape != (14,):
+        raise ValueError(f"numeric2 must have shape (14,), got {vec.shape}")
+
+    d1 = d2 = d3 = 0
+
+    # first digit
+    if vec[0] == 1:
+        d1 = 1
+    elif vec[1] == 1:
+        d1 = 2
+
+    # second digit
+    for i in range(2, 8):
+        if vec[i] == 1:
+            d2 = i - 2
+            break
+
+    # third digit
+    for i in range(8, 14):
+        if vec[i] == 1:
+            d3 = i - 8
+            break
+
+    return [d1, d2, d3]
 
 def flatten_list(l):
     return [item for sublist in l for item in sublist]
@@ -319,20 +346,25 @@ class EpisodicDataset(torch.utils.data.Dataset):
                     depth_data = 0
 
                 if self.use_text:
-                    use_prompt2 = (index % 2 == 1)
-
-                    if use_prompt2:
-                        input_ids = root['/prompts/input_ids2'][unique_indices]
-                        attention_mask = root['/prompts/attention_mask2'][unique_indices]
-                    else:
-                        input_ids = root['/prompts/input_ids'][unique_indices]
-                        attention_mask = root['/prompts/attention_mask'][unique_indices]
-
-                    input_ids = [input_ids[i] for i in inverse_indices]
-                    attention_mask = [attention_mask[i] for i in inverse_indices]
-                    # Convert the Python lists to PyTorch tensors
+                    input_ids = root['/prompts/numeric2'][unique_indices]
+                    input_ids = [numeric_to_tuple(input_ids[i]) for i in inverse_indices]
                     input_ids = torch.stack([torch.tensor(x) for x in input_ids])
-                    attention_mask = torch.stack([torch.tensor(x) for x in attention_mask])
+                    attention_mask = torch.tensor(0)
+
+                    # use_prompt2 = (index % 2 == 1)
+
+                    # if use_prompt2:
+                    #     input_ids = root['/prompts/input_ids2'][unique_indices]
+                    #     attention_mask = root['/prompts/attention_mask2'][unique_indices]
+                    # else:
+                    #     input_ids = root['/prompts/input_ids'][unique_indices]
+                    #     attention_mask = root['/prompts/attention_mask'][unique_indices]
+
+                    # input_ids = [input_ids[i] for i in inverse_indices]
+                    # attention_mask = [attention_mask[i] for i in inverse_indices]
+                    # # Convert the Python lists to PyTorch tensors
+                    # input_ids = torch.stack([torch.tensor(x) for x in input_ids])
+                    # attention_mask = torch.stack([torch.tensor(x) for x in attention_mask])
 
                 else:
                     # Provide a placeholder tensor when text is not used
@@ -717,10 +749,10 @@ def get_norm_stats(dataset_path_list):
         "state_std": state_std.numpy(),
     }
 
-    print(f"action_mean = {action_mean}")
-    print(f"action_std = {action_std}")
-    print(f"state_mean = {state_mean}")
-    print(f"state_std = {state_std}")
+    # print(f"action_mean = {action_mean}")
+    # print(f"action_std = {action_std}")
+    # print(f"state_mean = {state_mean}")
+    # print(f"state_std = {state_std}")
 
     return stats, all_episode_len
 
@@ -865,45 +897,32 @@ def load_data(
         use_masks,
         use_text
     )
-    #val_dataset = EpisodicDataset(
-    #    dataset_path_list,
-    #    camera_names,
-    #    norm_stats,
-    #    val_episode_ids,
-    #    val_episode_len,
-    #    chunk_size,
-    #    robot_obs_size,
-    #    img_obs_size,
-    #    img_obs_skip,
-    #    policy_class,
-    #    use_depth,
-    #    use_masks,
-    #    use_text
-    #)
-    train_sampler = DistributedSampler(train_dataset, shuffle=True)
-    #val_sampler = DistributedSampler(val_dataset, shuffle=False)
+
+    # train_sampler = DistributedSampler(train_dataset, shuffle=True)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size_train,
-        sampler=train_sampler,
+        shuffle=True,          # <-- IMPORTANT
         pin_memory=True,
-        num_workers=32,
+        num_workers=8,
         prefetch_factor=2,
-        persistent_workers=True, 
+        persistent_workers=True,
     )
-    #val_loader = DataLoader(
-    #    val_dataset,
-    #    batch_size=batch_size_val,
-    #    sampler=val_sampler,
-    #    pin_memory=True,
-    #    num_workers=16,
-    #    prefetch_factor=2,
-    #    persistent_workers=True, 
-    #)
 
-    #return train_loader, val_loader, train_sampler, val_sampler, norm_stats, train_dataset.is_sim
-    return train_loader, train_sampler, norm_stats, train_dataset.is_sim
+    # train_loader = DataLoader(
+    #     train_dataset,
+    #     batch_size=batch_size_train,
+    #     sampler=train_sampler,
+    #     pin_memory=True,
+    #     num_workers=8,
+    #     prefetch_factor=2,
+    #     persistent_workers=True, 
+    # )
+
+    # return train_loader, train_sampler, norm_stats, train_dataset.is_sim
+    return train_loader, norm_stats, train_dataset.is_sim
+
 
 def compute_dict_mean(epoch_dicts):
     result = {k: None for k in epoch_dicts[0]}

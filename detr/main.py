@@ -228,6 +228,7 @@ def get_args_parser():
     parser.add_argument("--future_len", action="store", type=int)
     parser.add_argument("--prediction_len", action="store", type=int)
     parser.add_argument("--pretrained_encoder_path", action="store", type=str, help="Path to pretrained encoder")
+    parser.add_argument("--grounding_ckpt", action="store", type=str, help="Path to grounding model ckpt")
 
     return parser
 

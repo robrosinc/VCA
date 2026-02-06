@@ -10,12 +10,8 @@ from tqdm import tqdm
 import wandb
 import time
 import torchvision.transforms.v2 as transforms
-import torch.distributed as dist
-import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as optim
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
 import torch.nn.init as init
 
 from robot.constants import HZ
@@ -29,47 +25,6 @@ import gc
 import IPython
 
 e = IPython.embed
-
-def setup():
-    rank       = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ["LOCAL_RANK"])
-
-    torch.cuda.set_device(local_rank)
-
-    dist.init_process_group(
-        backend="nccl",
-        init_method="env://",
-        rank=rank,
-        world_size=world_size,
-    )
-    return rank, world_size, local_rank
-
-def cleanup():
-    dist.destroy_process_group()
-
-os.environ["NCCL_DEBUG"] = "INFO"
-os.environ["NCCL_IB_DISABLE"] = "1"
-os.environ["NCCL_SOCKET_IFNAME"] = "lo"
-
-def setup(rank, world_size):
-    dist.init_process_group(
-        backend='nccl',
-        init_method='env://',
-        rank=rank, 
-        world_size=world_size
-        )
-    torch.cuda.set_device(rank)
-
-def cleanup():
-    dist.destroy_process_group()
-
-def expand_linear_weight_with_padding(model_layer, ckpt_weight):
-    new_weight = model_layer.weight.data.clone()
-    in_dim_ckpt = ckpt_weight.shape[1]
-    new_weight[:,:in_dim_ckpt] = ckpt_weight
-    new_weight[:, 20:] =0
-    return new_weight
 
 def make_policy(policy_class, policy_config):
     if policy_class == "ACT":
@@ -85,10 +40,37 @@ def make_policy(policy_class, policy_config):
 def remove_module_prefix(state_dict):
     return {k.replace("module.", "", 1): v for k, v in state_dict.items()}
 
+def load_grounding_ckpt(
+    policy: nn.Module,
+    ckpt_path: str,
+    device,
+    grounding_prefix="grounding",   # policy.grounding.*
+    freeze=True,
+):
+    ckpt = torch.load(ckpt_path, map_location=device)
+    state_dict = ckpt.get("state_dict", ckpt)
 
-def train(rank, world_size, args):
-    setup(rank, world_size)
-    set_seed(args["seed"] + rank)
+    NEW_PREFIX = "model.text_encoder."
+
+    remapped = {}
+    for k, v in state_dict.items():
+        remapped[NEW_PREFIX + k] = v
+    missing, unexpected = policy.load_state_dict(remapped, strict=False)
+
+    print(f"[GroundingModel load]")
+    print(f"  loaded keys     : {len(remapped)}")
+    print(f"  missing keys    : {len(missing)}")
+    print(f"  unexpected keys : {len(unexpected)}")
+
+    # freeze grounding
+    if freeze:
+        for name, param in policy.named_parameters():
+            if name.startswith("model.text_encoder."):
+                param.requires_grad = False
+
+def train(args):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    set_seed(args["seed"])
 
     is_wandb = args["wandb"]
     use_depth = args["use_depth"]
@@ -166,7 +148,7 @@ def train(rank, world_size, args):
 
 
     #train_loader, val_loader, train_sampler, val_sampler, norm_stats, is_sim = load_data(
-    train_loader, train_sampler, norm_stats, is_sim = load_data(
+    train_loader, norm_stats, is_sim = load_data(
         dataset_dir,
         name_filter,
         camera_names,
@@ -223,16 +205,16 @@ def train(rank, world_size, args):
     eval_every = config["eval_every"]
     validate_every = config["validate_every"]
     save_every = config["save_every"]
-    is_wandb = config["is_wandb"] and (rank == 0)
+    is_wandb = config["is_wandb"]
 
     policy = make_policy(policy_class, policy_config)
-    policy.cuda(rank)
+    policy.to(device)
     for param in policy.model.parameters():
         param.requires_grad = True # False
 
     if args.get("pretrained_encoder_path") is not None:
         # Load checkpoint
-        ckpt = torch.load(args["pretrained_encoder_path"], map_location=f"cuda:{rank}")
+        ckpt = torch.load(args["pretrained_encoder_path"], map_location=device)
         state_dict = ckpt.get("model_state", ckpt)
         state_dict = remove_module_prefix(state_dict)  # remove 'module.' if needed
 
@@ -247,6 +229,7 @@ def train(rank, world_size, args):
             "latent_out_proj",
             "backbones",
             "input_proj",
+            "input_proj_masks",
         ]
 
         # Filter only keys matching the prefixes
@@ -259,19 +242,25 @@ def train(rank, world_size, args):
 
         # Load weights into the policy
         missing, unexpected = policy.load_state_dict(filtered_dict, strict=False)
-        print(f"[Rank {rank}] Loaded pretrained weights. Missing: {missing}, Unexpected: {unexpected}")
+        print(f"Loaded pretrained weights. Missing: {missing}, Unexpected: {unexpected}")
 
         # Freeze pretrained layers, but leave latent_out_proj trainable
         for name, param in policy.named_parameters():
-            if any(name.startswith(prefix) for prefix in pretrained_prefixes) and not name.startswith("latent_out_proj") and not name.startswith("input_proj"):
+            if any(name.startswith(prefix) for prefix in pretrained_prefixes):
                 param.requires_grad = False  # freeze pretrained
             else:
                 param.requires_grad = True
-                
-    policy = DDP(policy, device_ids=[rank], find_unused_parameters=True)
-    optimizer = policy.module.configure_optimizers(lr_backbone, args['lr'], 1e-4)
 
-    is_wandb = is_wandb and (rank==0)
+    if args.get("grounding_ckpt") is not None:
+        load_grounding_ckpt(policy, args["grounding_ckpt"], device)
+
+    # if use_text:
+    #     n_trainable = sum(p.numel() for p in policy.model.text_encoder.parameters() if p.requires_grad)
+    #     print("Trainable parameters in BERT:", n_trainable)
+                
+    optimizer = policy.configure_optimizers(lr_backbone, args['lr'], 1e-4)
+
+    is_wandb = is_wandb
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
@@ -292,15 +281,14 @@ def train(rank, world_size, args):
         pickle.dump(norm_stats, f)
 
     if config["resume_ckpt_path"] is not None:
-        # map_location = lambda storage, loc: torch.device(f"cuda:{rank}")
-        ckpt = torch.load(config["resume_ckpt_path"], map_location= f"cuda:{rank}")
+        ckpt = torch.load(config["resume_ckpt_path"], map_location= device)
 
         if 'model_state' in ckpt:
-            loading_status = policy.module.deserialize(ckpt['model_state'])
+            loading_status = policy.deserialize(ckpt['model_state'])
         else:
             model_dict = remove_module_prefix(ckpt)
-            status = policy.module.deserialize(model_dict)
-            if rank == 0 and (status.missing_keys or status.unexpected_keys):
+            status = policy.deserialize(model_dict)
+            if (status.missing_keys or status.unexpected_keys):
                 print(f"Missing keys : {status.missing_keys} / Unexpected keys: {status.unexpected_keys}")
 
 
@@ -322,7 +310,7 @@ def train(rank, world_size, args):
     train_iter = iter(train_loader)
     current_epoch = 0
     
-    progress_bar = tqdm(range(start_step,total_steps), desc=f"Training (GPU-{rank})")
+    progress_bar = tqdm(range(start_step,total_steps), desc=f"Training")
 
     try:
         for step in progress_bar:       
@@ -330,13 +318,12 @@ def train(rank, world_size, args):
                 data = next(train_iter)
             except StopIteration:
                 current_epoch += 1
-                train_sampler.set_epoch(current_epoch)
                 train_iter = iter(train_loader)
                 data = next(train_iter)    
                 print(f'current_epoch: {current_epoch}')
 
             policy.train()
-            image_data, robot_proprio_data, action_data, is_pad, depth_data, mask_data, input_ids, attention_mask = [d.cuda(rank) for d in data]
+            image_data, robot_proprio_data, action_data, is_pad, depth_data, mask_data, input_ids, attention_mask = [d.to(device) for d in data]
 
             forward_dict = policy(robot_proprio_data, image_data, depth_data, mask_data, input_ids, attention_mask, action_data, is_pad)
             loss = forward_dict["loss"]
@@ -350,10 +337,10 @@ def train(rank, world_size, args):
             if is_wandb:
                 wandb.log(forward_dict, step=step) 
 
-            if step % save_every == 0 and rank ==0:
+            if step % save_every == 0:
                 ckpt_path = os.path.join(ckpt_dir, f"policy_step_{step}_seed_{seed}.ckpt")
                 torch.save({
-                    'model_state': policy.module.serialize(),
+                    'model_state': policy.serialize(),
                     'optim_state' : optimizer.state_dict(),
                     'step' : step,
                 }, ckpt_path)
@@ -363,13 +350,10 @@ def train(rank, world_size, args):
             wandb.finish()
         if 'train_loader' in locals():
             del train_loader
-        #if 'val_loader' in locals():
-        #    del val_loader
         torch.cuda.empty_cache()
         gc.collect()  # <<< 확실하게 garbage collection까지
         
         print('Finish the GPU multiprocessing')
-        cleanup()
 
 
 
@@ -538,9 +522,8 @@ if __name__ == "__main__":
     parser.add_argument("--no_encoder", action="store_true")
     parser.add_argument("--pretrained_encoder_path", action="store", type=str, help="Path to pretrained encoder")
     parser.add_argument("--freeze_encoder", action="store_true")
+    parser.add_argument("--grounding_ckpt", type=str, default=None)
 
     args = vars(parser.parse_args())
-    rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
 
-    train(rank, world_size, args)
+    train(args)
