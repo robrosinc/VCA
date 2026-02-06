@@ -155,7 +155,7 @@ def train(args):
 
 
     #train_loader, val_loader, train_sampler, val_sampler, norm_stats, is_sim = load_data(
-    train_loader, train_sampler, norm_stats, is_sim = load_data(
+    train_loader, norm_stats, is_sim = load_data(
         dataset_dir,
         name_filter,
         camera_names,

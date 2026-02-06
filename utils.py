@@ -897,45 +897,32 @@ def load_data(
         use_masks,
         use_text
     )
-    #val_dataset = EpisodicDataset(
-    #    dataset_path_list,
-    #    camera_names,
-    #    norm_stats,
-    #    val_episode_ids,
-    #    val_episode_len,
-    #    chunk_size,
-    #    robot_obs_size,
-    #    img_obs_size,
-    #    img_obs_skip,
-    #    policy_class,
-    #    use_depth,
-    #    use_masks,
-    #    use_text
-    #)
-    train_sampler = DistributedSampler(train_dataset, shuffle=True)
-    #val_sampler = DistributedSampler(val_dataset, shuffle=False)
+
+    # train_sampler = DistributedSampler(train_dataset, shuffle=True)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size_train,
-        sampler=train_sampler,
+        shuffle=True,          # <-- IMPORTANT
         pin_memory=True,
         num_workers=8,
         prefetch_factor=2,
-        persistent_workers=True, 
+        persistent_workers=True,
     )
-    #val_loader = DataLoader(
-    #    val_dataset,
-    #    batch_size=batch_size_val,
-    #    sampler=val_sampler,
-    #    pin_memory=True,
-    #    num_workers=16,
-    #    prefetch_factor=2,
-    #    persistent_workers=True, 
-    #)
 
-    #return train_loader, val_loader, train_sampler, val_sampler, norm_stats, train_dataset.is_sim
-    return train_loader, train_sampler, norm_stats, train_dataset.is_sim
+    # train_loader = DataLoader(
+    #     train_dataset,
+    #     batch_size=batch_size_train,
+    #     sampler=train_sampler,
+    #     pin_memory=True,
+    #     num_workers=8,
+    #     prefetch_factor=2,
+    #     persistent_workers=True, 
+    # )
+
+    # return train_loader, train_sampler, norm_stats, train_dataset.is_sim
+    return train_loader, norm_stats, train_dataset.is_sim
+
 
 def compute_dict_mean(epoch_dicts):
     result = {k: None for k in epoch_dicts[0]}
