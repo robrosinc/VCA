@@ -285,7 +285,7 @@ def train(args):
 
 
         start_step = ckpt.get('step', 0)
-        if !use_text and 'optim_state' in ckpt:
+        if not use_text and 'optim_state' in ckpt:
             optimizer.load_state_dict(ckpt['optim_state'])
             print(
                 f'Resume policy from: {config["resume_ckpt_path"]}, Status: {loading_status}, Step: {start_step}'
