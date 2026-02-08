@@ -8,7 +8,7 @@ TASK_CONFIGS = {
     ### BLOCK SORT
     'blocksort_mask':{
         'dataset_dir': DATA_DIR,
-        'episode_len': 5000,
+        'episode_len': 2100,
         'train_ratio': 0.99,
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],
         'robot_id_list': ['dsr_l', 'dsr_r'],
@@ -16,7 +16,7 @@ TASK_CONFIGS = {
     },
     'blocksort_text':{
         'dataset_dir': DATA_DIR,
-        'episode_len': 3000,
+        'episode_len': 2100,
         'train_ratio': 0.99,
         'camera_names': ['lhand_camera', 'rhand_camera', 'head_camera'],
         'robot_id_list': ['dsr_l', 'dsr_r'],

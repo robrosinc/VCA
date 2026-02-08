@@ -300,6 +300,7 @@ class DETRVAE(nn.Module):
                         B, C, H, W = features.shape
 
                         if i ==0:
+                            print(input_ids[:,t,0],input_ids[:,t,1],input_ids[:,t,2])
                             out = self.text_encoder(features, pos, input_ids[:,t,0], input_ids[:,t,1], input_ids[:,t,2])
                             out = self.input_proj_masks(out)
                             all_cam_features.append(out.flatten(2).permute(2,0,1))  # (HW, B, C)

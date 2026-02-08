@@ -34,6 +34,9 @@ from einops import rearrange
 from robot.metaquest_teleop import drlControl
 from robot.schunk_gripper_control import gripperControl
 from robot.robot_utils import ImageRecorder
+from transformers import AutoTokenizer
+tokenizer = AutoTokenizer.from_pretrained('prajjwal1/bert-small')
+
 # for single robot 
 try:
     ROBOT_ID     = rospy.get_param('/dsr/robot_id')
@@ -46,7 +49,6 @@ socket = context.socket(zmq.REQ)
 socket.connect("tcp://localhost:1113")
 
 predictor_ready= False
-init_masks=[]
 
 no_obj_points = np.array([[0, 0]], dtype=np.float32)
 no_obj_labels = np.array([-1], dtype=np.int32)
@@ -75,8 +77,74 @@ def send_array_recv_mask(array: np.ndarray, meta: dict = {}):
     array = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
     return array
 
-# Shared global used by Flask to stream
-latest_mask_bytes = None
+def send_array_recv_dual(array: np.ndarray, meta: dict = {}):
+    meta.update({'dtype': str(array.dtype), 'shape': array.shape})
+    socket.send_multipart([
+        json.dumps(meta).encode('utf-8'),
+        array.tobytes()
+    ])
+    meta_bytes, data_bytes = socket.recv_multipart()
+    meta = json.loads(meta_bytes.decode('utf-8'))
+    dtype = np.dtype(meta['dtype'])
+    shape = tuple(meta['shape'])
+    mask = np.frombuffer(data_bytes, dtype=dtype).reshape(shape)
+    text = meta['text']
+
+    return mask, text
+
+def send_array_recv_text(array: np.ndarray, meta: dict = {}):
+    """
+    Server returns JSON:
+      {
+        "frame_idx": int,
+        "class_id": int,
+        "numeric": {"n1": int, "n2": int, "n3": int} OR None
+      }
+
+    We convert numeric -> input_ids = [n1,n2,n3] (shape (3,))
+    attention_mask is returned as shape (3,) for compatibility.
+    """
+    meta.update({'dtype': str(array.dtype), 'shape': array.shape})
+    socket.send_multipart([
+        json.dumps(meta).encode('utf-8'),
+        array.tobytes()
+    ])
+
+    payload = socket.recv_json()
+    numeric = payload.get("numeric", None)
+
+    if numeric is None:
+        n1, n2, n3 = 0, 0, 0
+    else:
+        n1 = int(numeric.get("n1", 0))
+        n2 = int(numeric.get("n2", 0))
+        n3 = int(numeric.get("n3", 0))
+
+    input_ids = np.asarray([n1, n2, n3], dtype=np.int64)          # (3,)
+    attention_mask = np.asarray([1, 1, 1], dtype=np.int64)        # (3,)
+    text = ""  # server doesn't send text
+
+    return input_ids, attention_mask, text, payload
+
+
+    # ---- 2) If your policy expects fixed seq length (likely 16), pad to 16 ----
+    # If your policy REALLY expects 16 like BERT, keep this ON:
+    MAX_TEXT_LEN = 16
+    if ids.shape[0] < MAX_TEXT_LEN:
+        pad = np.zeros((MAX_TEXT_LEN - ids.shape[0],), dtype=np.int64)
+        input_ids = np.concatenate([ids, pad], axis=0)
+    else:
+        input_ids = ids[:MAX_TEXT_LEN]
+
+    # attention mask: 1 for first 3 tokens, 0 for padding
+    attention_mask = np.zeros((MAX_TEXT_LEN,), dtype=np.int64)
+    attention_mask[:3] = 1
+
+    # server no longer sends text (by design). keep empty string.
+    text = ""
+
+    return input_ids, attention_mask, text, payload
+
 
 current_pose_l = None
 current_pose_r = None
@@ -94,7 +162,7 @@ def current_pose_callback_r(msg):
         current_pose_r = np.array(msg.data)
 
 def main(args):
-    global init_masks, predictor_ready
+    global predictor_ready
 
     task_config = TASK_CONFIGS[args['task_name']]
     dataset_dir = task_config['dataset_dir']
@@ -115,9 +183,10 @@ def main(args):
     # Parameters
     temporal_ensemble = True
     esb_k = 0.05
-    policy_update_period = 10000 # tick, work without temporal ensemble
-    use_depth = False
-    use_masks = args['use_masks']
+    policy_update_period = 10 # tick, work without temporal ensemble
+    use_depth = args.get("use_depth", False)
+    use_masks = args.get("use_masks", False)
+    use_text = args.get("use_text", False)
     overwrite = False
     relative_obs_mode = False
     relative_action_mode = False
@@ -131,8 +200,8 @@ def main(args):
     inference_batch = 1
 
     ### Experiment Parameters
-    dsr_pose_action_skip = 6
-    gripper_action_skip = 6
+    dsr_pose_action_skip = 11
+    gripper_action_skip = 11
     record_snapshot = True
     img_name = 'test'
     
@@ -148,7 +217,8 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_400000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'policy_step_405000_seed_10.ckpt')
+    # ckpt_path = os.path.join(ckpt_dir, 'lim_20000.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
@@ -195,6 +265,7 @@ def main(args):
     image_obs_history = dict()
     depth_obs_history = dict()
     mask_obs_history = dict()
+    text_obs_history = dict()
     if relative_obs_mode:
         robot_obs_history = np.zeros((num_robot_obs+1, state_dim), dtype=np.float32)
         relative_robot_obs_history = np.zeros((num_robot_obs, state_dim), dtype=np.float32)
@@ -333,9 +404,9 @@ def main(args):
         # cv2.waitKey(0)
         if cam_name == 'head_camera':
             # cropped_first_image = first_image[140:-100,:,:].copy()
-            first_image = first_image[:,:640]
             if use_masks:
-                binary_mask = send_array_recv_mask(first_image)
+                first_input = first_image[:,:640].copy()
+                binary_mask = send_array_recv_mask(first_input)
                 first_mask = (binary_mask > 0).astype(np.float32) * 255
                 if img_downsampling:
                     # first_mask = cv2.resize(first_mask[0], dsize=img_downsampling_size, interpolation=cv2.INTER_LINEAR)
@@ -345,8 +416,17 @@ def main(args):
                 mask_obs_history['head_camera'][0] = first_mask
                 # print("next value", mask_obs_history["head_camera"].shape)
             # first_image = cv2.resize(cropped_first_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
-        else:
-            first_image = cv2.resize(first_image, dsize=(640,480), interpolation=cv2.INTER_LINEAR)
+
+            if use_text:
+                first_input = first_image[:, :640].copy()
+                ids0, mask0, first_text, _payload = send_array_recv_text(first_input)
+
+                # (T_full, L)
+                T_full = (num_image_obs - 1) * image_obs_every + 1
+                input_ids_buffer      = np.tile(ids0[None, :],  (T_full, 1))
+                attention_mask_buffer = np.tile(mask0[None, :], (T_full, 1))
+
+
         first_image = rearrange(first_image, 'h w c -> c h w')
 
         image_obs_history[cam_name] = np.repeat(first_image[np.newaxis, :, :, :], (num_image_obs-1)*image_obs_every + 1, axis=0) #0xxx0xxx0
@@ -459,9 +539,9 @@ def main(args):
 
                     if cam_name == 'head_camera':
                         # cropped_image = current_image[140:-100,:,:].copy()
-                        current_image = current_image[:,:640]
                         if use_masks:
-                            binary_mask = send_array_recv_mask(current_image)
+                            current_input = current_image[:,:640].copy()
+                            binary_mask = send_array_recv_mask(current_input)
                             current_mask = (binary_mask > 0).astype(np.float32) * 255
                             # current_mask = np.expand_dims(binary_mask, axis=0) # channel dim
                             if img_downsampling:
@@ -473,9 +553,19 @@ def main(args):
                                 mask_obs_history[cam_name][0] = current_mask
                             else:
                                 mask_obs_history[cam_name][0] = current_mask
+
+                        if use_text:
+                            current_input = current_image[:, :640].copy()
+                            ids_t, mask_t, current_text, _payload = send_array_recv_text(current_input)
+
+                            if num_image_obs > 1:
+                                input_ids_buffer[1:]      = input_ids_buffer[:-1]
+                                attention_mask_buffer[1:] = attention_mask_buffer[:-1]
+
+                            input_ids_buffer[0]      = ids_t
+                            attention_mask_buffer[0] = mask_t
                         # current_image = cv2.resize(cropped_image, dsize=(1280,480), interpolation=cv2.INTER_LINEAR)
-                    else:
-                        current_image = cv2.resize(current_image, dsize=(640,480), interpolation=cv2.INTER_LINEAR)
+
                     # current_image = rearrange(image_recorder.get_images()[cam_name], 'h w c -> c h w')
                     current_image = rearrange(current_image, 'h w c -> c h w')
 
@@ -489,7 +579,6 @@ def main(args):
                 # print('image obs', image_obs_history['head_camera'].shape)
                 all_cam_images = []
                 for cam_name in camera_names:
-                    # print(cam_name, image_obs_history[cam_name].shape)
                     all_cam_images.append(np.array(image_obs_history[cam_name])[image_sampling])
 
                 all_cam_images = np.stack(all_cam_images, axis=0)
@@ -504,22 +593,33 @@ def main(args):
 
                 # move data into GPU
                 cam_masks = None
+                input_ids_torch = None
+                attention_mask_torch = None
                 if use_gpu_for_inference:
                     if inference_batch == 1:
                         robot_obs_history_torch = torch.from_numpy(robot_obs_history_flat).float().cuda().unsqueeze(0)
                         cam_images = torch.from_numpy(all_cam_images / 255.0).float().cuda().unsqueeze(0)
                         if use_masks:
                             cam_masks = torch.from_numpy(all_cam_masks).float().cuda().unsqueeze(0)
+                        if use_text:
+                            input_ids_torch = torch.from_numpy(input_ids_buffer[image_sampling]).long().cuda().unsqueeze(0)
+                            attention_mask_torch = torch.from_numpy(attention_mask_buffer[image_sampling]).long().cuda().unsqueeze(0)
                     else:
                         robot_obs_history_torch = torch.from_numpy(robot_obs_history_flat).float().cuda().unsqueeze(0).repeat_interleave(inference_batch, dim=0)
                         cam_images = torch.from_numpy(all_cam_images / 255.0).float().cuda().unsqueeze(0).repeat_interleave(inference_batch, dim=0)
                         if use_masks:
                             cam_masks = torch.from_numpy(all_cam_masks).float().cuda().unsqueeze(0).repeat_interleave(inference_batch, dim=0)
+                        if use_text:
+                            input_ids_torch = torch.from_numpy(input_ids_buffer[image_sampling]).long().cuda().repeat(inference_batch, 1, 1) 
+                            attention_mask_torch = torch.from_numpy(attention_mask_buffer[image_sampling]).long().cuda().repeat(inference_batch, 1, 1) 
                 else:
                     robot_obs_history_torch = torch.from_numpy(robot_obs_history_flat).float().cpu().unsqueeze(0)
                     cam_images = torch.from_numpy(all_cam_images / 255.0).float().cpu().unsqueeze(0)
                     if use_masks:
                         cam_masks = torch.from_numpy(all_cam_masks).float().cpu().unsqueeze(0)
+                    if use_text:
+                        input_ids_torch = torch.from_numpy(input_ids_buffer[image_sampling]).long().cpu().unsqueeze(0)
+                        attention_mask_torch = torch.from_numpy(attention_mask_buffer[image_sampling]).long().cpu().unsqueeze(0)
                 # print("image", cam_images.shape, "masks", cam_masks.shape)
                 
                 # if img_downsampling:
@@ -554,6 +654,7 @@ def main(args):
 
                     # Restore original shape
                     cam_images = cam_images.view(B, K, T, C, target_h, target_w)
+
                     if use_masks:
                         B, K, T, C, H, W = cam_masks.shape
                         cam_masks = cam_masks.view(B * K * T, C, H, W)
@@ -572,7 +673,7 @@ def main(args):
                 t2 = time.time()
                 # policy inference
                 # print("shape", cam_images.shape, cam_masks.shape) # [1,3,2,3,240,640] [2,1,240,640]
-                all_actions = policy(robot_obs_history_torch, cam_images, masks = cam_masks) # action dim: [1, chunk_size, action_dim]
+                all_actions = policy(robot_obs_history_torch, cam_images, masks = cam_masks, input_ids = input_ids_torch, attention_mask= attention_mask_torch) # action dim: [1, chunk_size, action_dim]
                 t3 = time.time()
                 all_actions = all_actions.cpu().numpy()
                 all_actions = all_actions[0]
@@ -823,5 +924,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_dir', action='store', type=str, help='Check Point Directory.', required=True)
     parser.add_argument('--task_name', action='store', type=str, help='Task name.', default='mask_demo', required=False)
-    parser.add_argument('--use_masks', action='store_true')
+    parser.add_argument('--use_masks', action='store_true', required=False)
+    parser.add_argument('--use_text', action='store_true', required=False)
     main(vars(parser.parse_args()))
