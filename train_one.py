@@ -72,8 +72,8 @@ def train(args):
     name_filter = task_config.get("name_filter", lambda n: True)
 
     # fixed parameters
-    state_dim = 29
-    action_dim = 20
+    state_dim = 10
+    action_dim = 10
     lr_backbone = args["lr"]
     backbone = "resnet34"
     # backbone = "vit_b_16"
@@ -121,7 +121,7 @@ def train(args):
 
 
     #train_loader, val_loader, train_sampler, val_sampler, norm_stats, is_sim = load_data(
-    train_loader, train_sampler, norm_stats, is_sim = load_data(
+    train_loader, norm_stats, is_sim = load_data(
         dataset_dir,
         name_filter,
         camera_names,
@@ -222,9 +222,9 @@ def train(args):
                 param.requires_grad = False  # freeze pretrained
             else:
                 param.requires_grad = True
-
-    n_trainable = sum(p.numel() for p in policy.model.text_encoder.parameters() if p.requires_grad)
-    print("Trainable parameters in BERT:", n_trainable)
+    if use_text:
+        n_trainable = sum(p.numel() for p in policy.model.text_encoder.parameters() if p.requires_grad)
+        print("Trainable parameters in BERT:", n_trainable)
                 
     optimizer = policy.configure_optimizers(lr_backbone, args['lr'], 1e-4)
 
@@ -232,7 +232,7 @@ def train(args):
     if is_wandb:
         expr_name = ckpt_dir.split("/")[-1]
         wandb.init(
-            project="blocksort-text",
+            project="hanoi-with-mask-200",
             reinit=True,
             entity="donggunkim-kyung-hee-university",
             name=expr_name,
