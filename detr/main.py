@@ -230,6 +230,11 @@ def get_args_parser():
     parser.add_argument("--pretrained_encoder_path", action="store", type=str, help="Path to pretrained encoder")
     parser.add_argument("--grounding_ckpt", action="store", type=str, help="Path to grounding model ckpt")
 
+    parser.add_argument("--freeze_backbones", action="store_true")
+    parser.add_argument("--freeze_grounding", action="store_true")
+    parser.add_argument("--freeze_cvae", action="store_true")
+
+
     return parser
 
 
