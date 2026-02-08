@@ -300,17 +300,17 @@ def train(args):
 
     for name, param in policy.named_parameters():
         if args.get("freeze_backbones", False) and (
-            name.startswith("backbones") or name=="input_proj"
+            name.startswith("model.backbones") or name=="models.input_proj"
         ):
             param.requires_grad = False
 
         if args.get("freeze_grounding", False) and (
-            name.startswith("text_encoder") or name.startswith("input_proj_masks")
+            name.startswith("model.text_encoder") or name.startswith("model.input_proj")
         ):
             param.requires_grad = False
 
         if args.get("freeze_cvae", False) and any(
-            name.startswith(prefix) for prefix in cvae_prefixes
+            name.startswith(f"model.{prefix}") for prefix in cvae_prefixes
         ):
             param.requires_grad = False
 
