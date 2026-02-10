@@ -115,7 +115,7 @@ def main(args):
     # Parameters
     temporal_ensemble = True
     esb_k = 0.05
-    policy_update_period = 10000 # tick, work without temporal ensemble
+    policy_update_period = 23 # tick, work without temporal ensemble
     use_depth = False
     use_masks = args['use_masks']
     overwrite = False
