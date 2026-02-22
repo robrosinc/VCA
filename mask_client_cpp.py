@@ -148,7 +148,7 @@ def main(args):
     ckpt_dir = args['ckpt_dir']
     # ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     # ckpt_path = os.path.join(ckpt_dir, 'policy_last.ckpt')
-    ckpt_path = os.path.join(ckpt_dir, 'policy_step_400000_seed_10.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, 'blocksort_with_mask.ckpt')
     
     print('ckpt_path: ', ckpt_path)
     config_path = os.path.join(ckpt_dir, 'config.pkl')
