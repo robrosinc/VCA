@@ -2,7 +2,6 @@ import pathlib
 import os
 
 ### Task parameters
-# DATA_DIR = os.path.expanduser('/home/robros-ai/dg/IL_data/new')
 DATA_DIR = os.path.expanduser('/root/dataset')
 TASK_CONFIGS = {
     ### BLOCK SORT
@@ -22,23 +21,6 @@ TASK_CONFIGS = {
         'robot_id_list': ['dsr_l', 'dsr_r'],
         # 'sample_weights': [3,1],
     },
-    'hanoi':{
-        'dataset_dir': DATA_DIR,
-        'episode_len': 1600,
-        'train_ratio': 0.99,
-        'camera_names': ['rhand_camera', 'head_camera'],
-        'robot_id_list': ['dsr_r'],
-        # 'sample_weights': [3,1],
-    },
-    'hanoi2':{
-        'dataset_dir': DATA_DIR, 
-#+ '/hanoi',
-        'episode_len': 1000,
-        'train_ratio': 0.99,
-        'camera_names': ['rhand_camera', 'head_camera'],
-        'robot_id_list': ['dsr_r'],
-        # 'sample_weights': [3,1],
-    }
 }
 
 HZ = 20
