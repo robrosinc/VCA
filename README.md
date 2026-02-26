@@ -26,8 +26,8 @@ This repo was initially forked from the [ACT repo](https://github.com/tonyzhaozh
     conda activate act
     pip install -e .
 
-- also need to install realtime sam2 submodule https://github.com/robrosinc/REALTIME_SAM2 by `git submodule update --init --recursive --remote` and download checkpoints
-
+Also need to install realtime sam2 submodule https://github.com/robrosinc/REALTIME_SAM2 and download checkpoints
+    git submodule update --init --recursive --remote
     cd external/tamapp/checkpoints
     ./download_checkpoints.sh
 
