@@ -19,6 +19,7 @@ This repository contains the official implementation of [VCA]( https://robrosinc
     pip install -e .
 
 Also install the realtime sam2 submodule https://github.com/robrosinc/REALTIME_SAM2 and download checkpoints
+
     git submodule update --init --recursive --remote
     cd external/tamapp/checkpoints
     ./download_checkpoints.sh
