@@ -3,12 +3,9 @@
 
 #### Project Website: https://robrosinc.github.io/vca/
 
-This repo contains the implementation of VCA.
+This repository is the official implementation of VCA.
 
-This repo was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act).
-
-### Updates:
-
+This repository was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act).
 
 ### Repo Structure
 - ``train.py`` Train VCA via DDP
@@ -26,7 +23,7 @@ This repo was initially forked from the [ACT repo](https://github.com/tonyzhaozh
     conda activate act
     pip install -e .
 
-Also need to install realtime sam2 submodule https://github.com/robrosinc/REALTIME_SAM2 and download checkpoints
+Also install the [realtime_sam2 submodule](https://github.com/robrosinc/REALTIME_SAM2) and download checkpoints
 
     git submodule update --init --recursive --remote
     cd external/tamapp/checkpoints
