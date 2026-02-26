@@ -1,9 +1,6 @@
 # VCA: Vision-Click-Action framework for precise manipulation of segmented objects
 
-
-## Project Website: https://robrosinc.github.io/vca/
-
-This repository is the official implementation of VCA.
+This repository is the official implementation of [VCA](https://robrosinc.github.io/vca/).
 
 ## Repo Structure
 - ``train.py`` Train VCA via DDP
@@ -60,9 +57,9 @@ Inference:
 This repository was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act) (MIT License).
 
 
-This project includes realtimeSAM2 as a submodule,
+This project includes [realtimeSAM2]((https://github.com/robrosinc/REALTIME_SAM2)) as a submodule,
 
-which is originally forked from:
+which was originally forked from:
 https://github.com/Gy920/segment-anything-2-real-time (Apache License 2.0)
 
 Modifications were made.
