@@ -1,16 +1,8 @@
 # VCA: Vision-Click-Action framework for precise manipulation of segmented objects
 
+This repository contains the official implementation of [VCA]( https://robrosinc.github.io/vca/).
 
-#### Project Website: https://robrosinc.github.io/vca/
-
-This repo contains the implementation of VCA.
-
-This repo was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act).
-
-### Updates:
-
-
-### Repo Structure
+## Repo Structure
 - ``train.py`` Train VCA via DDP
 - ``train_one.py`` Train VCA on one GPU
 - ``policy.py`` An adaptor for ACT policy
@@ -20,19 +12,19 @@ This repo was initially forked from the [ACT repo](https://github.com/tonyzhaozh
 - ``utils.py`` Utils such as data loading and helper functions
 
 
-### Installation
+## Installation
 
     conda create -n act python=3.8.10
     conda activate act
     pip install -e .
 
-Also need to install realtime sam2 submodule https://github.com/robrosinc/REALTIME_SAM2 and download checkpoints
+Also install the realtime sam2 submodule https://github.com/robrosinc/REALTIME_SAM2 and download checkpoints
     git submodule update --init --recursive --remote
     cd external/tamapp/checkpoints
     ./download_checkpoints.sh
 
 
-### Example Usages
+## Example Usages
 
 First create ros1 package doosan_robot_server here: https://github.com/robrosinc/doosan_robot_serverConnect
 
@@ -59,3 +51,14 @@ Inference:
     roslaunch ros_tcp_endpoint teleop_camera_rviz.launch
     python mask_server.py --use_masks
     python mask_client_cpp.py --use_masks --ckpt_dir checkpoint/hanoi
+
+## License
+This repository was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act) (MIT License).
+
+
+This project includes [realtimeSAM2]((https://github.com/robrosinc/REALTIME_SAM2)) as a submodule,
+
+which was originally forked from:
+https://github.com/Gy920/segment-anything-2-real-time (Apache License 2.0)
+
+Modifications were made.
