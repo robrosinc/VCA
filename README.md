@@ -1,13 +1,11 @@
 # VCA: Vision-Click-Action framework for precise manipulation of segmented objects
 
 
-#### Project Website: https://robrosinc.github.io/vca/
+## Project Website: https://robrosinc.github.io/vca/
 
 This repository is the official implementation of VCA.
 
-This repository was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act).
-
-### Repo Structure
+## Repo Structure
 - ``train.py`` Train VCA via DDP
 - ``train_one.py`` Train VCA on one GPU
 - ``policy.py`` An adaptor for ACT policy
@@ -17,7 +15,7 @@ This repository was initially forked from the [ACT repo](https://github.com/tony
 - ``utils.py`` Utils such as data loading and helper functions
 
 
-### Installation
+## Installation
 
     conda create -n act python=3.8.10
     conda activate act
@@ -30,7 +28,7 @@ Also install the [realtime_sam2 submodule](https://github.com/robrosinc/REALTIME
     ./download_checkpoints.sh
 
 
-### Example Usages
+## Example Usages
 
 First create ros1 package doosan_robot_server here: https://github.com/robrosinc/doosan_robot_serverConnect
 
@@ -57,3 +55,11 @@ Inference:
     roslaunch ros_tcp_endpoint teleop_camera_rviz.launch
     python mask_server.py --use_masks
     python mask_client_cpp.py --use_masks --ckpt_dir checkpoint/blocksort
+
+## License
+This repository was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act).
+
+This project includes realtimeSAM2 as a submodule,
+
+which is licensed under Apache License 2.0 and originally forked from:
+https://github.com/Gy920/segment-anything-2-real-time
