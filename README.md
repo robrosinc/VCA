@@ -57,9 +57,12 @@ Inference:
     python mask_client_cpp.py --use_masks --ckpt_dir checkpoint/blocksort
 
 ## License
-This repository was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act).
+This repository was initially forked from the [ACT repo](https://github.com/tonyzhaozh/act) (MIT License).
+
 
 This project includes realtimeSAM2 as a submodule,
 
-which is licensed under Apache License 2.0 and originally forked from:
-https://github.com/Gy920/segment-anything-2-real-time
+which is originally forked from:
+https://github.com/Gy920/segment-anything-2-real-time (Apache License 2.0)
+
+Modifications were made.
