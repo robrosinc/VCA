@@ -51,4 +51,4 @@ Inference:
     rosrun doosan_robot_server doosan_robot_server_node
     roslaunch ros_tcp_endpoint teleop_camera_rviz.launch
     python mask_server.py --use_masks
-    python mask_client_cpp.py --use_masks --ckpt_dir checkpoint/hanoi
+    python mask_client_cpp.py --use_masks --ckpt_dir checkpoint/blocksort
