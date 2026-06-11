@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="VCA: Vision-Click-Action Framework for Precise Manipulation of Segmented Objects in Target Ambiguous Environments.">
+    <title>VCA: Vision-Click-Action</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="#">VCA</a>
+        <div class="nav-links">
+          <a href="#method">Method</a>
+          <a href="#experiments">Experiments</a>
+          <a href="#results">Results</a>
+          <a href="#citation">Citation</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Vision-Click-Action Framework</p>
+          <h1>Precise robot manipulation through direct visual selection.</h1>
+          <p class="lead">
+            VCA replaces ambiguous language prompts with click-based object selection. A user click creates a real-time
+            segmentation mask, and a mask-conditioned transformer policy executes the requested manipulation.
+          </p>
+          <div class="actions" aria-label="Project links">
+            <a class="button primary" href="https://arxiv.org/abs/2602.23583">Paper</a>
+            <a class="button" href="https://arxiv.org/pdf/2602.23583">PDF</a>
+            <a class="button" href="https://github.com/robrosinc/VCA">Code</a>
+          </div>
+        </div>
+        <figure class="hero-figure">
+          <img src="assets/figures/whole.jpg" alt="Overview of the VCA click, segmentation, and robot action pipeline.">
+          <figcaption>Click-generated object masks condition a transformer action policy.</figcaption>
+        </figure>
+      </section>
+
+      <section class="paper-meta" aria-label="Paper metadata">
+        <h2>VCA: Vision-Click-Action Framework for Precise Manipulation of Segmented Objects in Target Ambiguous Environments</h2>
+        <p>Donggeon Kim, Seungwon Jang, Hyeonjun Park, Daegyu Lim</p>
+        <p>ROBROS Inc.</p>
+      </section>
+
+      <section class="section" id="method">
+        <div class="section-head">
+          <p class="eyebrow">Method</p>
+          <h2>Click first, act precisely.</h2>
+        </div>
+        <div class="split">
+          <div>
+            <p>
+              VCA adapts SAM2-style video segmentation for live robot operation. User prompts can be added or reset
+              mid-episode, allowing the robot to track explicitly selected object instances instead of interpreting
+              verbose language descriptions.
+            </p>
+            <p>
+              The selected mask is encoded alongside multi-view RGB observations and robot proprioception. A
+              transformer encoder fuses these tokens, and a decoder predicts action chunks for closed-loop control.
+            </p>
+          </div>
+          <figure>
+            <img src="assets/figures/memorybank.jpg" alt="Memory bank update mechanism for real-time prompt changes.">
+            <figcaption>Prompt updates overwrite class memory and restart tracking from the current frame.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section muted" id="experiments">
+        <div class="section-head">
+          <p class="eyebrow">Experiments</p>
+          <h2>Real-world manipulation with ambiguous targets.</h2>
+        </div>
+        <div class="gallery">
+          <figure>
+            <img src="assets/figures/collect.png" alt="Experimental hardware setup with two robot arms, cameras, and click interface.">
+            <figcaption>Hardware setup with two 6-DoF robot arms, grippers, cameras, and a clicking interface.</figcaption>
+          </figure>
+          <figure>
+            <img src="assets/figures/blocksort.jpg" alt="Block sorting environments with normal and shifted visual conditions.">
+            <figcaption>Block sorting evaluates target selection among similar colored blocks and bins.</figcaption>
+          </figure>
+          <figure>
+            <img src="assets/figures/hanoi.jpg" alt="Tower of Hanoi environments with rings under visual distribution shifts.">
+            <figcaption>Tower of Hanoi tests precise selection among visually similar rings.</figcaption>
+          </figure>
+          <figure>
+            <img src="assets/figures/tricky.jpg" alt="Ambiguous target examples where language descriptions are difficult.">
+            <figcaption>Direct clicks reduce ambiguity when several objects are hard to describe uniquely.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section" id="results">
+        <div class="section-head">
+          <p class="eyebrow">Results</p>
+          <h2>Comparable success, clearer target grounding.</h2>
+        </div>
+        <div class="results-grid">
+          <article class="metric">
+            <span>96%</span>
+            <h3>Block sorting success</h3>
+            <p>VCA reached 96% success over 100 real-world trials, with no wrong-target selections reported.</p>
+          </article>
+          <article class="metric">
+            <span>94%</span>
+            <h3>Tower of Hanoi success</h3>
+            <p>VCA matched the baseline success rate while handling dense, visually similar object instances.</p>
+          </article>
+          <article class="metric">
+            <span>44%</span>
+            <h3>Plaid block sorting shift</h3>
+            <p>Under severe plaid background shift, VCA improved success compared with 20% for vanilla ACT.</p>
+          </article>
+        </div>
+
+        <figure class="wide-figure">
+          <img src="assets/figures/snippet.jpg" alt="Policy behavior showing click prompt execution and reset prompt interruption.">
+          <figcaption>Click prompts initiate object-conditioned execution; reset prompts interrupt and return to waiting.</figcaption>
+        </figure>
+      </section>
+
+      <section class="section citation" id="citation">
+        <div class="section-head">
+          <p class="eyebrow">Citation</p>
+          <h2>Reference</h2>
+        </div>
+        <pre><code>@article{kim2026vca,
+  title={VCA: Vision-Click-Action Framework for Precise Manipulation of Segmented Objects in Target Ambiguous Environments},
+  author={Kim, Donggeon and Jang, Seungwon and Park, Hyeonjun and Lim, Daegyu},
+  journal={arXiv preprint arXiv:2602.23583},
+  year={2026}
+}</code></pre>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>Restored from published arXiv assets for the ROBROS VCA project page.</p>
+    </footer>
+  </body>
+</html>
