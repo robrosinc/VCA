@@ -1,6 +1,6 @@
 # VCA: Vision-Click-Action framework for precise manipulation of segmented objects
 
-This repository is the official implementation of [VCA](https://robrosinc.github.io/vca/).
+This repository is the official implementation of [VCA](https://robrosinc.github.io/VCA/).
 
 ## Repo Structure
 - ``train.py`` Train VCA via DDP
